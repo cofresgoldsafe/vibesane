@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { runVibesane, EXIT_CODES } from './index.js';
+import { formatTerminalReport, shouldEnableColor } from './reporter/terminal-ui.js';
 
 export interface CliIO {
   stdout: (msg: string) => void;
@@ -94,10 +95,8 @@ export async function main(
   }
 
   const result = await runVibesane(portNum !== undefined ? { port: portNum } : {});
-  if (result.ok) {
-    stdout(result.message);
-    return EXIT_CODES.OK;
-  }
-  stderr(result.message);
-  return EXIT_CODES.SANITY_FAILURE;
+  const useColor = io.stdout === undefined && shouldEnableColor();
+  const output = formatTerminalReport(result, { color: useColor });
+  stdout(output);
+  return result.ok ? EXIT_CODES.OK : EXIT_CODES.SANITY_FAILURE;
 }

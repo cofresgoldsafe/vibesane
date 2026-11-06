@@ -9,8 +9,11 @@ import {
 } from './port-detector.js';
 import {
   detectMaskedError,
+  extractNextErrorInfo,
+  extractViteErrorInfo,
   scanSecrets,
   sanitizeErrorSnippet,
+  stripViteTimestampQuery,
   type SanityIssue,
 } from './security-scan.js';
 
@@ -220,7 +223,7 @@ export function extractCandidateScripts(
       continue;
     }
 
-    const normalized = `${resolved.pathname}${resolved.search}`;
+    const normalized = stripViteTimestampQuery(`${resolved.pathname}${resolved.search}`);
     if (seen.has(normalized)) {
       continue;
     }
@@ -277,7 +280,7 @@ export function selectScriptsToFetch(
   let idx = 0;
 
   for (const raw of input) {
-    const trimmed = raw.trim();
+    const trimmed = stripViteTimestampQuery(raw.trim());
     if (!trimmed || seen.has(trimmed) || isExcludedFrameworkScript(trimmed)) {
       continue;
     }
@@ -361,7 +364,7 @@ export function extractModuleImports(
       continue;
     }
 
-    const normalized = `${resolved.pathname}${resolved.search}`;
+    const normalized = stripViteTimestampQuery(`${resolved.pathname}${resolved.search}`);
     if (isExcludedFrameworkScript(normalized) || seen.has(normalized)) {
       continue;
     }
@@ -557,20 +560,37 @@ export async function runSanityScan(
     });
 
     if (finalRoot.statusCode >= 400) {
-      const masked = isHtmlLike(finalRoot.contentType, finalRoot.body)
-        ? detectMaskedError(finalRoot.body, '/')
-        : [];
-      const snippet = masked[0]?.maskedSnippet;
-      issues.push({
-        kind: 'http_error',
-        severity: 'error',
-        route: '/',
-        statusCode: finalRoot.statusCode,
-        detail: snippet
-          ? `HTTP ${finalRoot.statusCode} on route / (${snippet})`
-          : `HTTP ${finalRoot.statusCode} on route /`,
-        ...(snippet ? { maskedSnippet: snippet } : {}),
-      });
+      const structured =
+        extractNextErrorInfo(finalRoot.body, '/') ??
+        extractViteErrorInfo(finalRoot.body, '/');
+      if (structured) {
+        issues.push({
+          kind: 'http_error',
+          severity: 'error',
+          route: '/',
+          statusCode: finalRoot.statusCode,
+          detail: `HTTP ${finalRoot.statusCode} on route / (${structured.summary})`,
+          maskedSnippet: structured.summary,
+          ...(structured.codeFrame ? { codeFrame: structured.codeFrame } : {}),
+        });
+      } else {
+        const masked = isHtmlLike(finalRoot.contentType, finalRoot.body)
+          ? detectMaskedError(finalRoot.body, '/')
+          : [];
+        const snippet = masked[0]?.maskedSnippet;
+        const codeFrame = masked[0]?.codeFrame;
+        issues.push({
+          kind: 'http_error',
+          severity: 'error',
+          route: '/',
+          statusCode: finalRoot.statusCode,
+          detail: snippet
+            ? `HTTP ${finalRoot.statusCode} on route / (${snippet})`
+            : `HTTP ${finalRoot.statusCode} on route /`,
+          ...(snippet ? { maskedSnippet: snippet } : {}),
+          ...(codeFrame ? { codeFrame } : {}),
+        });
+      }
     } else if (isHtmlLike(finalRoot.contentType, finalRoot.body)) {
       issues.push(...detectMaskedError(finalRoot.body, '/'));
     }
@@ -619,6 +639,7 @@ export async function runSanityScan(
     };
 
     const enqueueScriptTask = (scriptPath: string): void => {
+      const cleanScriptPath = stripViteTimestampQuery(scriptPath);
       taskQueue.push(async () => {
         if (budgetController.signal.aborted) {
           return;
@@ -631,24 +652,26 @@ export async function runSanityScan(
             routeTimeoutMs,
             true,
           );
-          scannedScripts.push(scriptPath);
+          scannedScripts.push(cleanScriptPath);
 
           if (snap.statusCode >= 400) {
-            const snippet = sanitizeErrorSnippet(snap.body);
+            const structured = extractViteErrorInfo(snap.body, cleanScriptPath);
+            const snippet = structured ? structured.summary : sanitizeErrorSnippet(snap.body);
             issues.push({
               kind: 'http_error',
               severity: 'error',
-              route: scriptPath,
+              route: cleanScriptPath,
               statusCode: snap.statusCode,
               detail: snippet
-                ? `HTTP ${snap.statusCode} on script ${scriptPath}: ${snippet}`
-                : `HTTP ${snap.statusCode} on script ${scriptPath}`,
+                ? `HTTP ${snap.statusCode} on script ${cleanScriptPath}: ${snippet}`
+                : `HTTP ${snap.statusCode} on script ${cleanScriptPath}`,
               ...(snippet ? { maskedSnippet: snippet } : {}),
+              ...(structured?.codeFrame ? { codeFrame: structured.codeFrame } : {}),
             });
           }
 
           if (snap.body.length > 0) {
-            issues.push(...scanSecrets(snap.body, scriptPath));
+            issues.push(...scanSecrets(snap.body, cleanScriptPath));
           }
 
           if (
@@ -656,10 +679,10 @@ export async function runSanityScan(
             snap.statusCode >= 200 &&
             snap.statusCode < 300 &&
             scheduledScripts.size < maxScripts &&
-            scriptPath.includes('/src/') &&
+            cleanScriptPath.includes('/src/') &&
             snap.body.length > 0
           ) {
-            const imported = extractModuleImports(snap.body, scriptPath, baseOrigin);
+            const imported = extractModuleImports(snap.body, cleanScriptPath, baseOrigin);
             for (const imp of imported) {
               if (scheduledScripts.size >= maxScripts) {
                 break;
@@ -682,8 +705,8 @@ export async function runSanityScan(
             issues.push({
               kind: 'http_error',
               severity: 'error',
-              route: scriptPath,
-              detail: `Request failed on script ${scriptPath}`,
+              route: cleanScriptPath,
+              detail: `Request failed on script ${cleanScriptPath}`,
             });
           }
         }
@@ -715,20 +738,37 @@ export async function runSanityScan(
           });
 
           if (snap.statusCode >= 400) {
-            const masked = isHtmlLike(snap.contentType, snap.body)
-              ? detectMaskedError(snap.body, routePath)
-              : [];
-            const snippet = masked[0]?.maskedSnippet;
-            issues.push({
-              kind: 'http_error',
-              severity: 'error',
-              route: routePath,
-              statusCode: snap.statusCode,
-              detail: snippet
-                ? `HTTP ${snap.statusCode} on route ${routePath} (${snippet})`
-                : `HTTP ${snap.statusCode} on route ${routePath}`,
-              ...(snippet ? { maskedSnippet: snippet } : {}),
-            });
+            const structured =
+              extractNextErrorInfo(snap.body, routePath) ??
+              extractViteErrorInfo(snap.body, routePath);
+            if (structured) {
+              issues.push({
+                kind: 'http_error',
+                severity: 'error',
+                route: routePath,
+                statusCode: snap.statusCode,
+                detail: `HTTP ${snap.statusCode} on route ${routePath} (${structured.summary})`,
+                maskedSnippet: structured.summary,
+                ...(structured.codeFrame ? { codeFrame: structured.codeFrame } : {}),
+              });
+            } else {
+              const masked = isHtmlLike(snap.contentType, snap.body)
+                ? detectMaskedError(snap.body, routePath)
+                : [];
+              const snippet = masked[0]?.maskedSnippet;
+              const codeFrame = masked[0]?.codeFrame;
+              issues.push({
+                kind: 'http_error',
+                severity: 'error',
+                route: routePath,
+                statusCode: snap.statusCode,
+                detail: snippet
+                  ? `HTTP ${snap.statusCode} on route ${routePath} (${snippet})`
+                  : `HTTP ${snap.statusCode} on route ${routePath}`,
+                ...(snippet ? { maskedSnippet: snippet } : {}),
+                ...(codeFrame ? { codeFrame } : {}),
+              });
+            }
           } else if (isHtmlLike(snap.contentType, snap.body)) {
             issues.push(...detectMaskedError(snap.body, routePath));
           }

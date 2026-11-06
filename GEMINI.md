@@ -1,9 +1,9 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-06)
-- **Branch:** `feat/task-3-sanity-engine`
-- **Última tarefa concluída:** Task 3 (Motor de Testes de Sanidade + 5 ajustes do Red Team, 62/62 testes verdes)
-- **Próxima tarefa:** Task 4 (Gerador de Prompt para IA — AI Fix Formatter)
+- **Branch:** `feat/task-4-ai-reporter`
+- **Última tarefa concluída:** Task 4 (Gerador de Prompt para IA & Terminal UI — 70/70 testes verdes)
+- **Próxima tarefa:** Task 5 (README de Classe Mundial & Publicação)
 
 ---
 
@@ -21,13 +21,13 @@
 - **Priorização de `<script src>` e Imports ESM Locais:** Exclui infraestrutura (`/node_modules/`, `/@vite/`, `/@react-refresh`, `webpack`, `main-app`, `polyfills`, `react-refresh`, `framework-`, `turbopack-`, `node_modules_`, `next_dist`, `turbopack`, `%5bturbopack%5d`, `polyfill`, `_buildmanifest`, `_ssgmanifest` em `EXCLUDED_SCRIPT_SUBSTRINGS` / `isExcludedFrameworkScript`, cobrindo Next 16 com Turbopack) e prioriza código da aplicação (`/src/`, `app/page`, `app/layout`, `pages/`), seguindo imports ESM de 1º nível em `/src/` até o teto de 5 scripts. Scripts/módulos com status `4xx`/`5xx` geram `http_error` (`severity: 'error'`) com `sanitizeErrorSnippet` mascarando segredos.
 - **Rota Lenta (`slow_route` > 1500ms) e Timeout de Sub-rota:** Medida pelo tempo até os headers (`headersElapsedMs`), isenta no `GET /` inicial e em `<script src>`, emitida como `severity: 'warning'` (mantendo `ok: true` e exit code `0`). Sub-rotas que estouram `routeTimeoutMs` (`TimeoutError`/`AbortError` sem `budgetController.signal.aborted`) também viram `slow_route` (`severity: 'warning'`, mantendo `ok: true` e exit code `0`), reservando `http_error` para falhas reais de conexão ou loops `> 3` redirects.
 - **Scanner de Segurança e Erros Mascarados (`src/scanner/security-scan.ts`):** `detectMaskedError` (apenas HTML) busca marcadores exatos (`nextjs__container_errors`, `"Unhandled Runtime Error"`, `__next_error__`, `vite-error-overlay`, `[plugin:vite:`). Páginas com status `>= 400` e marcador de `masked_error` emitem um único `http_error` consolidado sem duplicar `masked_error`. `scanSecrets` ignora `pk_live_`, `pk_test_`, `NEXT_PUBLIC_*`, `VITE_*`, `<input type="password">` e valores de `password`/`senha`/`passwd`/`pwd` com espaços em branco (evitando falsos positivos em textos de validação de UI), aplicando `redactSecret` (`sk_live_****ab12`) no contrato `SanityIssue` (`kind`, `severity`, `route`, `detail`, `maskedSnippet`).
-
----
-
-## Backlog / Requisitos Capturados para a Task 4 (AI Fix Formatter & Terminal UI)
-1. Extrair do payload/JSON de erro do Vite os campos estruturados (`message`, arquivo/`id`, linha/coluna/`loc`) para que o prompt de correção mostre arquivo e linha sem ruído ou truncamento cego em 140 caracteres.
-2. Limpar query strings de cache-busting do Vite (`?t=<timestamp>` / `&t=<timestamp>`) ao exibir caminhos de scripts/módulos no relatório e no prompt.
-3. Mascaramento específico de senhas mostrando apenas o 1º caractere (`G***`), em vez de prefixo + sufixo (`Gol****26`).
+- **Saída de Relatório e Prompt no `stdout` (`src/cli.ts`, `src/reporter/terminal-ui.ts`):** `stdout` recebe toda a saída de execução (`ok: true` e `ok: false`) permitindo `npx vibesane | clip` ou `npx vibesane | pbcopy`; `stderr` fica exclusivo para `EXIT_CODES.USAGE_ERROR (2)`. `styleText` de `node:util` aplica cores somente no resumo visual quando TTY colorido está ativo (`!NO_COLOR`), mantendo o bloco do prompt de IA 100% texto puro sem códigos ANSI.
+- **Gerador de Prompt para IA (`src/reporter/ai-prompt-gen.ts`):** Cabeçalho em inglês `🤖 AI FIX PROMPT (copy & paste into Cursor / Claude Code / Gemini CLI):`, deduplicação de erros, limite de `MAX_PROMPT_ERRORS = 10` (`...and N more`), e instruções específicas para `secret_leak` (`Move this key to a server-only environment variable (never NEXT_PUBLIC_ / VITE_) and rotate it if it was ever committed or deployed.`) e erro em arquivo/rota (`Fix only the error pointed out above; do not refactor unrelated code.`).
+- **Extração Estruturada de Erros Vite & Next 16 e Resolução de Módulo-Fonte (`src/scanner/security-scan.ts`):**
+  - Vite: `extractViteErrorInfo` faz `JSON.parse` real sobre `const error = {...}`, usa o caminho HTTP servido sem expor caminhos absolutos do SO (`loc.file`), remove `?t=<timestamp>` via `stripViteTimestampQuery` e inclui `codeFrame` de até 10 linhas sanitizadas.
+  - Next 16: `extractNextErrorInfo` desescapa payloads RSC/Flight, ignora `__next_builtin__*` e prioriza `"type":"page"` (`broken/page.tsx — TypeError: ...`).
+  - Resolução de módulo-fonte em chunks (`resolveBundledSourceFile`): mapeia segredos vazados em chunks compilados para o arquivo-fonte original a partir do último marcador antes da chave (Turbopack `[project]/src/...` e Webpack `(app-pages-browser)/./src/...`).
+  - Detecção em Webpack `eval("...")` e Mascaramentos Específicos: `ENV_SECRET_RE`, `DATABASE_URL_RE` e `PASSWORD_FIELD_RE` aceitam aspas escapadas `\\?["']` e excluem `\`; `redactPassword` mascara senhas como `G***` (e `***` para vazia); `redactConnectionUri` mascara apenas a senha da URI (`postgres://user:****@host/db`).
 
 ---
 
@@ -35,3 +35,4 @@
 - `2026-11-05` — **Task 1 (Setup do Repositório & Tooling):** Concluída e verificada ao vivo (`npm test` com 35/35 testes passando em `node:test`, `npm run typecheck` limpo, `npm pack --dry-run --json` < 500 KB, zero bytes CRLF em `bin/vibesane.js`).
 - `2026-11-06` — **Task 2 (Detector de Portas e Servidores Locais):** Concluída e verificada ao vivo (`45/45` testes passando em `node:test` cobrindo IPv4, IPv6, desempate determinístico, `alsoActivePorts`, `non_http`, `http_timeout`, `no_server` e validações de fronteira; `npm run typecheck` limpo).
 - `2026-11-06` — **Task 3 (Motor de Testes de Sanidade):** Concluída e verificada ao vivo com os 5 ajustes do Red Team (`62/62` testes passando em `node:test`, zero alterações nos 45 testes das Tasks 1 e 2, `npm run typecheck` limpo).
+- `2026-11-06` — **Task 4 (Gerador de Prompt para IA & Terminal UI):** Concluída e verificada ao vivo (`70/70` testes passando em `node:test` cobrindo `terminal-ui`, `ai-prompt-gen`, extração estruturada Vite/Next 16, resolução de módulo-fonte em chunks Turbopack/Webpack, mascaramento `G***` e URI de banco; `npm run typecheck` limpo).

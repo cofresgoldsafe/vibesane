@@ -41,7 +41,7 @@ Sem arquivos de configuração. Ela detecta automaticamente o servidor local em 
 - **Quando** a execução for finalizada,
 - **Então** a CLI deve exibir no terminal:
   - O resumo visual do erro destacado em vermelho/amarelo.
-  - Uma seção destacada: **`🤖 PROMPT DE CORREÇÃO PARA SUA IA (Copie e cole):`**
+  - Uma seção destacada: **`🤖 AI FIX PROMPT (copy & paste into Cursor / Claude Code / Gemini CLI):`**
   - O texto formatado com contexto do erro, arquivo suspeito e a instrução clara para a IA corrigir sem degradar o restante do código.
 
 ---
@@ -101,8 +101,8 @@ vibesane/
   - [x] Implementar checagem de status HTTP e headers.
   - [x] Implementar analisador de HTML básico para checagem de erros 500 mascarados e credenciais expostas.
 
-- [ ] **Task 4: Gerador de Prompt para IA (AI Fix Formatter)**
-  - Criar template de prompt determinístico contendo a rota, código HTTP retornado e instrução de correção para Cursor/Claude/Gemini.
+- [x] **Task 4: Gerador de Prompt para IA (AI Fix Formatter)**
+  - [x] Criar template de prompt determinístico contendo a rota, código HTTP retornado e instrução de correção para Cursor/Claude/Gemini.
 
 - [ ] **Task 5: README de Classe Mundial & Publicação**
   - Criar README com gravação de terminal em GIF.

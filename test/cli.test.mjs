@@ -110,10 +110,10 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
       const res = await runCli(['--port', String(closedPort)]);
       assert.equal(res.code, EXIT_CODES.SANITY_FAILURE);
       assert.equal(res.code, 1);
-      assert.equal(res.stdout, '');
+      assert.equal(res.stderr, '');
       assert.ok(
-        res.stderr.includes(`vibesane: no active server found on port ${closedPort}`),
-        `stderr inesperado: ${res.stderr}`,
+        res.stdout.includes(`vibesane: no active server found on port ${closedPort}`),
+        `stdout inesperado: ${res.stdout}`,
       );
     });
 
