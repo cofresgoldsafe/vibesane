@@ -2,9 +2,9 @@
 
 ## Status do Plano Ativo (2026-11-06)
 - **Versão atual publicada:** `v0.1.1` (npm + GitHub Releases `v0.1.0` e `v0.1.1`)
-- **Branch:** `fix/ignore-third-party-module-secrets`
-- **Última tarefa concluída:** **Fix v0.1.2 (Ignorar Segredos de Atribuição em Módulos de Terceiros e Fronteiras Estritas de Bundle)** — Resolução precisa de fronteiras de módulo via `WEBPACK_MODULE_DEF_RE` (com suporte a monorepos `\.\.?\/`) e `TURBOPACK_MODULE_DEF_RE` (com suporte a `<locals>` e `<export default as ...>`), extração única em `O(N)` com cache por chunk e busca binária, descarte seletivo de regras de atribuição (`kind === 'assignment'`) em código de terceiros (`node_modules`, `next/dist`), preservação de regras `token` (`sk_live_`, `ghp_`, etc.) mesmo em terceiros atribuídas ao chunk servido, eliminação de falsos positivos no Next 14.2 e Next 16 com `@supabase/supabase-js`, e 6 novos testes (10a a 10f) em `test/sanity-scanner.test.mjs` (`92/92` testes passando).
-- **Próxima tarefa:** Commit na branch `fix/ignore-third-party-module-secrets`, push e abertura do PR para a `main`.
+- **Branch:** `main`
+- **Última tarefa concluída:** **Fix v0.1.2 (Ignorar Segredos de Atribuição em Módulos de Terceiros e Fronteiras Estritas de Bundle — PR #8 mergeado)** — Resolução precisa de fronteiras de módulo via `WEBPACK_MODULE_DEF_RE` (com suporte a monorepos `\.\.?\/`) e `TURBOPACK_MODULE_DEF_RE` (com suporte a `<locals>` e `<export default as ...>`), extração única em `O(N)` com cache por chunk e busca binária, descarte seletivo de regras de atribuição (`kind === 'assignment'`) em código de terceiros (`node_modules`, `next/dist`), preservação de regras `token` (`sk_live_`, `ghp_`, etc.) mesmo em terceiros atribuídas ao chunk servido, eliminação de falsos positivos no Next 14.2 e Next 16 com `@supabase/supabase-js`, e 6 novos testes (10a a 10f) em `test/sanity-scanner.test.mjs` (`92/92` testes passando).
+- **Próxima tarefa:** Definir próximo passo da v0.1.2 (ex.: branch dedicada para ajuste do teto de leitura JS para 8 MB no Webpack ou bump/publicação da release v0.1.2).
 
 ---
 
