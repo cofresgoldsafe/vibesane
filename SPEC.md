@@ -41,7 +41,7 @@ Sem arquivos de configuração. Ela detecta automaticamente o servidor local em 
 - **Quando** a execução for finalizada,
 - **Então** a CLI deve exibir no terminal:
   - O resumo visual do erro destacado em vermelho/amarelo.
-  - Uma seção destacada: **`🤖 AI FIX PROMPT (copy & paste into Cursor / Claude Code / Gemini CLI):`**
+  - Uma seção destacada: **`AI FIX PROMPT (copy & paste into Cursor / Claude Code / Gemini CLI):`**
   - O texto formatado com contexto do erro, arquivo suspeito e a instrução clara para a IA corrigir sem degradar o restante do código.
 
 ---
@@ -77,6 +77,8 @@ vibesane/
 │   ├── reporter/
 │   │   ├── terminal-ui.ts      # Renderização visual limpa no terminal
 │   │   └── ai-prompt-gen.ts    # Gerador de prompt formatado para colar na IA
+│   ├── text/
+│   │   └── ascii.ts            # Normalização de símbolos tipográficos/box-drawing para ASCII
 │   └── index.ts
 ├── package.json
 ├── tsconfig.json
@@ -104,7 +106,7 @@ vibesane/
 - [x] **Task 4: Gerador de Prompt para IA (AI Fix Formatter)**
   - [x] Criar template de prompt determinístico contendo a rota, código HTTP retornado e instrução de correção para Cursor/Claude/Gemini.
 
-- [ ] **Task 5: README de Classe Mundial & Publicação**
-  - Criar README com gravação de terminal em GIF.
-  - Publicar primeira versão no npm (`v0.1.0`).
-  - Preparar roteiro de lançamento no Hacker News e comunidades de Vibe Coding.
+- [x] **Task 5: README de Classe Mundial & Publicação**
+  - [x] Criar README com demonstração de saída em texto real (substituindo GIF por poda YAGNI), casos de cold start do Next.js, limitações e suporte a clipboard Windows/macOS.
+  - [x] Preparar pacote npm (`v0.1.0`) validado via `npm pack --dry-run` (publicação no npm executada manualmente pelo mantenedor na `main` após o merge do PR).
+  - [x] Consolidar documentação e memória arquitetural do lançamento.

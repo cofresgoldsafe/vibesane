@@ -1,3 +1,5 @@
+import { toAsciiSafe } from '../text/ascii.js';
+
 export type SanitySeverity = 'error' | 'warning';
 export type SanityIssueKind = 'http_error' | 'masked_error' | 'secret_leak' | 'slow_route';
 
@@ -618,8 +620,10 @@ function formatCodeFrame(rawFrame?: string): string | undefined {
   if (!rawFrame || typeof rawFrame !== 'string') {
     return undefined;
   }
-  const cleaned = sanitizeSecretsInText(
-    scrubAbsolutePathsInText(rawFrame.replace(ANSI_ESCAPE_RE, '').replace(/\r\n/g, '\n')),
+  const cleaned = toAsciiSafe(
+    sanitizeSecretsInText(
+      scrubAbsolutePathsInText(toAsciiSafe(rawFrame.replace(ANSI_ESCAPE_RE, ''))),
+    ),
   );
   const lines = cleaned.split('\n');
   while (lines.length > 0 && lines[0]!.trim() === '') {
@@ -715,11 +719,21 @@ export function extractViteErrorInfo(
       line !== undefined ? `:${line}${column !== undefined ? `:${column}` : ''}` : '';
     const safeLocation = safeFile ? `${safeFile}${lineColSuffix}` : '';
 
-    let cleanMessage = sanitizeSecretsInText(
-      scrubAbsolutePathsInText(payload.message.replace(ANSI_ESCAPE_RE, '')),
+    const rawMsgLines = toAsciiSafe(
+      payload.message.replace(ANSI_ESCAPE_RE, '').replace(/\r\n/g, '\n'),
+    ).split('\n');
+    const firstNonEmptyIdx = rawMsgLines.findIndex((line) => line.trim().length > 0);
+    const firstLine = firstNonEmptyIdx !== -1 ? rawMsgLines[firstNonEmptyIdx]! : '';
+
+    let cleanMessage = toAsciiSafe(
+      sanitizeSecretsInText(scrubAbsolutePathsInText(firstLine)),
     )
       .replace(/\s+/g, ' ')
       .trim();
+
+    if (/^x\s+/.test(cleanMessage)) {
+      cleanMessage = cleanMessage.replace(/^x\s+/, '').trim();
+    }
 
     if (safeFile && cleanMessage.startsWith(`${safeFile}:`)) {
       cleanMessage = cleanMessage.slice(safeFile.length + 1).trim();
@@ -729,12 +743,15 @@ export function extractViteErrorInfo(
 
     const summary =
       safeLocation && !cleanMessage.startsWith(safeLocation)
-        ? `${safeLocation} — ${cleanMessage}`
+        ? `${safeLocation} - ${cleanMessage}`
         : cleanMessage;
 
-    const codeFrame = formatCodeFrame(
-      typeof payload.frame === 'string' ? payload.frame : undefined,
-    );
+    let codeFrame: string | undefined;
+    if (typeof payload.frame === 'string' && payload.frame.trim().length > 0) {
+      codeFrame = formatCodeFrame(payload.frame);
+    } else if (firstNonEmptyIdx !== -1 && firstNonEmptyIdx + 1 < rawMsgLines.length) {
+      codeFrame = formatCodeFrame(rawMsgLines.slice(firstNonEmptyIdx + 1).join('\n'));
+    }
 
     return {
       summary,
@@ -747,7 +764,7 @@ export function extractViteErrorInfo(
     raw.includes('[plugin:vite:') ||
     raw.includes('Pre-transform error:')
   ) {
-    const withoutAnsi = raw.replace(ANSI_ESCAPE_RE, '').replace(/\r\n/g, '\n');
+    const withoutAnsi = toAsciiSafe(raw.replace(ANSI_ESCAPE_RE, '').replace(/\r\n/g, '\n'));
     const strippedTags = withoutAnsi.replace(/<[^>]*>/g, '\n');
     const rawLines = strippedTags.split('\n');
 
@@ -759,7 +776,12 @@ export function extractViteErrorInfo(
       if (!trimmedLine) {
         continue;
       }
-      if (/^(?:>\s*)?\d+\s*\|/.test(trimmedLine) || /^\|\s*\^/.test(trimmedLine)) {
+      if (
+        /^(?:>\s*)?\d+\s*\|/.test(trimmedLine) ||
+        /^\|\s*\^/.test(trimmedLine) ||
+        /^\s*[+|]-/.test(line) ||
+        /^\s*\|/.test(line)
+      ) {
         frameLines.push(line);
       } else if (
         trimmedLine.includes('Transform failed with') ||
@@ -771,7 +793,7 @@ export function extractViteErrorInfo(
     }
 
     const baseMsg = messageLines.length > 0 ? messageLines.join(' ') : strippedTags;
-    const cleanMessage = sanitizeSecretsInText(scrubAbsolutePathsInText(baseMsg))
+    const cleanMessage = toAsciiSafe(sanitizeSecretsInText(scrubAbsolutePathsInText(baseMsg)))
       .replace(/\s+/g, ' ')
       .trim();
 
@@ -782,7 +804,7 @@ export function extractViteErrorInfo(
     const safeFile = cleanServedRoute ?? extractSafeAppPath(cleanMessage);
     const summary =
       safeFile && !cleanMessage.includes(safeFile)
-        ? `${safeFile} — ${cleanMessage}`
+        ? `${safeFile} - ${cleanMessage}`
         : cleanMessage;
     const codeFrame = frameLines.length > 0 ? formatCodeFrame(frameLines.join('\n')) : undefined;
 
@@ -921,12 +943,14 @@ export function extractNextErrorInfo(
         continue;
       }
 
-      const cleanMsg = sanitizeSecretsInText(scrubAbsolutePathsInText(errMsg))
-        .replace(/\s+/g, ' ')
-        .trim();
+      const cleanMsg = toAsciiSafe(
+        sanitizeSecretsInText(scrubAbsolutePathsInText(errMsg))
+          .replace(/\s+/g, ' ')
+          .trim(),
+      );
       const targetPath = cleanNextPagePath(rawPagePath, servedRoute);
       const summary = targetPath
-        ? `${targetPath} — ${errName}: ${cleanMsg}`
+        ? `${targetPath} - ${errName}: ${cleanMsg}`
         : `${errName}: ${cleanMsg}`;
 
       return { summary };

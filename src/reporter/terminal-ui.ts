@@ -1,4 +1,5 @@
 import { styleText } from 'node:util';
+import { toAsciiSafe } from '../text/ascii.js';
 import {
   AI_PROMPT_HEADER,
   generateAiFixPrompt,
@@ -35,7 +36,7 @@ export function shouldEnableColor(
 }
 
 function formatSummaryCodeFrame(rawFrame: string, maxLines = 10): string[] {
-  const clean = stripAnsiCodes(rawFrame).replace(/\r\n/g, '\n').trimEnd();
+  const clean = toAsciiSafe(stripAnsiCodes(rawFrame)).replace(/\r\n/g, '\n').trimEnd();
   if (!clean) {
     return [];
   }
@@ -114,28 +115,29 @@ export function formatTerminalReport(
   const hasErrors =
     Array.isArray(result.issues) &&
     result.issues.some((issue) => issue.severity === 'error');
+  const safeMessage = toAsciiSafe(result.message);
 
   if (result.port === null || (!result.ok && !hasErrors)) {
-    return useColor ? styleText('red', result.message) : result.message;
+    return useColor ? styleText('red', safeMessage) : safeMessage;
   }
 
   if (result.ok) {
     if (!useColor) {
-      return result.message;
+      return safeMessage;
     }
-    return styleSummaryLines(result.message, true);
+    return styleSummaryLines(safeMessage, true);
   }
 
-  let summarySection = result.message;
+  let summarySection = safeMessage;
   let existingPromptSection: string | null = null;
 
-  const headerIndex = result.message.indexOf(AI_PROMPT_HEADER);
+  const headerIndex = safeMessage.indexOf(AI_PROMPT_HEADER);
   if (headerIndex !== -1) {
-    summarySection = result.message.slice(0, headerIndex).trimEnd();
-    existingPromptSection = result.message.slice(headerIndex);
+    summarySection = safeMessage.slice(0, headerIndex).trimEnd();
+    existingPromptSection = safeMessage.slice(headerIndex);
   }
 
-  summarySection = injectMissingCodeFrames(summarySection, result.issues);
+  summarySection = injectMissingCodeFrames(toAsciiSafe(summarySection), result.issues);
   const renderedSummary = useColor
     ? styleSummaryLines(summarySection, false)
     : summarySection;
@@ -148,5 +150,5 @@ export function formatTerminalReport(
     return renderedSummary;
   }
 
-  return `${renderedSummary}\n\n${stripAnsiCodes(promptBlock)}`;
+  return `${renderedSummary}\n\n${toAsciiSafe(stripAnsiCodes(promptBlock))}`;
 }

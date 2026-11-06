@@ -1,0 +1,117 @@
+# vibesane
+
+Preflight sanity check for vibe-coded web apps, typically under 3 seconds. Zero config, zero runtime dependencies, instant copy-paste AI fix prompts.
+
+## Quickstart
+
+Start your local dev server (`npm run dev`), then run in another terminal:
+
+```bash
+npx vibesane
+```
+
+Check a specific port:
+
+```bash
+npx vibesane --port 8080
+```
+
+**Requirement:** Node.js `>= 22.13.0`.
+
+## Pipe Directly to Clipboard (`pbcopy` / `clip`)
+
+All scan output goes to `stdout` (`stderr` receives only CLI usage errors, exit code `2`, and unexpected internal errors), so you can pipe the report and AI fix prompt directly to your clipboard:
+
+macOS:
+
+```bash
+npx vibesane | pbcopy
+```
+
+Windows (`cmd.exe` or PowerShell):
+
+```powershell
+npx vibesane | clip
+```
+
+> **Windows UTF-8 Note:** `vibesane` emits pure ASCII headers, separators, and code frames so `| clip` works cleanly even under the default Windows codepage (`CP850`). If your own application code contains accented characters (e.g., Portuguese or Spanish) that you want to preserve when copying on Windows:
+> - **PowerShell:** `[Console]::OutputEncoding = [Text.Encoding]::UTF8; npx vibesane | Set-Clipboard`
+> - **`cmd.exe`:** `chcp 65001 >nul && npx vibesane | clip`
+
+## Real Output Example
+
+```text
+vibesane: sanity check failed on http://localhost:5173 (2 error(s))
+error [http_error]: HTTP 500 on script /src/components/Pay.tsx - Transform failed with 1 error:
+  [PARSE_ERROR] Expected `,` or `}` but found `Identifier`
+     +-[ src/components/Pay.tsx:2:98 ]
+     |
+   2 |   const broken = { stripeKey: "sk_live_****abcd", msg: "Olá, senha inválida" b: 2 };
+     |                  +                                                                               +
+     |                  +---------------------------------------------------------------------------------- Opened here
+     |                                                                                                  |
+     |                                                                                                  +-- `,` or `}` expected
+  ---+
+error [secret_leak]: Secret leak on /src/components/Pay.tsx: Stripe secret key (sk_live_****abcd)
+
+AI FIX PROMPT (copy & paste into Cursor / Claude Code / Gemini CLI):
+Target: http://localhost:5173
+1. [http_error] HTTP 500 on script /src/components/Pay.tsx - Transform failed with 1 error:
+   [PARSE_ERROR] Expected `,` or `}` but found `Identifier`
+      +-[ src/components/Pay.tsx:2:98 ]
+      |
+    2 |   const broken = { stripeKey: "sk_live_****abcd", msg: "Olá, senha inválida" b: 2 };
+      |                  +                                                                               +
+      |                  +---------------------------------------------------------------------------------- Opened here
+      |                                                                                                  |
+      |                                                                                                  +-- `,` or `}` expected
+   ---+
+2. [secret_leak] Secret leak on /src/components/Pay.tsx: Stripe secret key (sk_live_****abcd)
+Instruction (secrets): Move this key to a server-only environment variable (never NEXT_PUBLIC_ / VITE_) and rotate it if it was ever committed or deployed.
+Instruction (code): Fix only the error pointed out above; do not refactor unrelated code.
+```
+
+## What It Checks
+
+- **Dual-Stack Port Auto-Detection:** Probes `127.0.0.1` and `::1` across `3000, 3001, 5173, 5174, 8080, 8000, 4321` and confirms an active HTTP server.
+- **HTTP Status & Route Crawling:** Checks `/` plus up to 10 internal routes (`<a href>`) and up to 5 application scripts/modules (`<script src>` and first-level `/src/` ESM imports) for `4xx`/`5xx` responses.
+- **Masked Error Overlays on `200 OK`:** Detects Next.js and Vite runtime/compile error overlays hidden inside `200 OK` HTML responses, including Next 16 RSC/Flight error payloads and Vite/Oxc code frames.
+- **Client-Side Secret Leaks:** Scans HTML and JS bundles for exposed secrets (`sk_live_*`, `sk_test_*`, `rk_live_*`, `rk_test_*`, `AIzaSy*`, `ghp_*`, `sk-proj-*`, `sk-ant-*`, `*_SECRET`, `*_PRIVATE_KEY`, `DATABASE_URL` with credentials, and hardcoded `password`/`senha` assignments), resolving the original source file inside Turbopack and Webpack chunks while ignoring public keys (`pk_live_*`, `pk_test_*`, `NEXT_PUBLIC_*`, `VITE_*`).
+- **Slow Routes:** Flags routes taking `> 1500ms` to return headers as `warning [slow_route]`.
+
+## Next.js Cold Start (On-Demand Compilation)
+
+Right after starting `next dev`, Next.js compiles routes on demand on the very first request:
+
+- If the root route `/` takes **more than 2 seconds** to compile, the port detector exits with an HTTP timeout (exit code `1`: `port 3000 accepted the connection but took >2s to respond (still compiling?)`).
+- If sub-routes take too long to compile on first hit, they are reported as `warning [slow_route]` or `info: N route(s) not checked (time budget reached)`.
+- **Fix:** Simply **run `npx vibesane` again** — once the dev server has compiled and cached the route, the scan finishes in milliseconds.
+
+## Limitations (What It Does Not Do)
+
+- **No Headless Browser (Not Playwright/Cypress):** Runs fast HTTP/HTML/JS inspection via `fetch`. It does not execute client-side JavaScript, click buttons, submit forms, or detect crashes that only trigger after DOM user interaction.
+- **HTML-Based Route Discovery:** Discovers sub-routes from `<a href="...">` links rendered in the HTML of `/`. In pure client-side SPAs where `<div id="root"></div>` is empty and routes exist only inside a client-side router, `vibesane` inspects `/` and up to 5 application JS modules (`/src/*`), but does not navigate client-only routes absent from initial HTML.
+- **No Authentication / Session State:** Protected routes redirecting to external login providers are skipped; same-origin redirects are followed up to 3 hops.
+- **Deterministic Caps:** Enforces a `2.5s` global crawl budget, up to `10` routes, `5` scripts, and `1 MB` per response body.
+
+## CLI Options & Exit Codes
+
+### Options
+
+| Flag | Description |
+| :--- | :--- |
+| `-p, --port <number>` | Check a specific TCP port (`1-65535`) instead of auto-detecting |
+| `-h, --help` | Show CLI usage information |
+| `-v, --version` | Print the package version |
+
+### Exit Codes
+
+| Code | Meaning |
+| :--- | :--- |
+| `0` | All sanity checks passed (including non-fatal warnings) |
+| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`) or no local HTTP server found |
+| `2` | CLI usage error (invalid flag or invalid `--port` value) |
+
+## License
+
+MIT
