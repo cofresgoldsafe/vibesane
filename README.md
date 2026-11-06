@@ -42,8 +42,7 @@ npx vibesane | clip
 
 ```text
 vibesane: sanity check failed on http://localhost:5173 (2 error(s))
-error [http_error]: HTTP 500 on script /src/components/Pay.tsx - Transform failed with 1 error:
-  [PARSE_ERROR] Expected `,` or `}` but found `Identifier`
+error [http_error]: HTTP 500 on script /src/components/Pay.tsx:2:98 - [PARSE_ERROR] Expected `,` or `}` but found `Identifier`
      +-[ src/components/Pay.tsx:2:98 ]
      |
    2 |   const broken = { stripeKey: "sk_live_****abcd", msg: "Olá, senha inválida" b: 2 };
@@ -56,8 +55,7 @@ error [secret_leak]: Secret leak on /src/components/Pay.tsx: Stripe secret key (
 
 AI FIX PROMPT (copy & paste into Cursor / Claude Code / Gemini CLI):
 Target: http://localhost:5173
-1. [http_error] HTTP 500 on script /src/components/Pay.tsx - Transform failed with 1 error:
-   [PARSE_ERROR] Expected `,` or `}` but found `Identifier`
+1. [http_error] HTTP 500 on script /src/components/Pay.tsx:2:98 - [PARSE_ERROR] Expected `,` or `}` but found `Identifier`
       +-[ src/components/Pay.tsx:2:98 ]
       |
     2 |   const broken = { stripeKey: "sk_live_****abcd", msg: "Olá, senha inválida" b: 2 };

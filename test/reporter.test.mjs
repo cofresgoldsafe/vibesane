@@ -584,19 +584,49 @@ describe('AI Fix Formatter & Terminal UI Reporter (BDD)', () => {
         `Esperava Target URL no prompt:\n${res.aiPrompt}`,
       );
 
-      // O Vite 8.3.6 real não envia loc, então a linha do erro fica sem :line:col e a posição 2:98 aparece na moldura
+      // O Vite 8.3.6 real não envia loc, mas extractViteErrorInfo extrai :2:98 do cabeçalho da moldura Oxc e promove [PARSE_ERROR] ... para o resumo
       const promptLines = res.aiPrompt.split('\n');
-      const httpErrorLine = promptLines.find((l) => l.startsWith('1. [http_error]'));
-      assert.ok(httpErrorLine, `Linha 1. [http_error] não encontrada em:\n${res.aiPrompt}`);
+      const httpErrorLineIdx = promptLines.findIndex((l) => l.startsWith('1. [http_error]'));
+      assert.notEqual(httpErrorLineIdx, -1, `Linha 1. [http_error] não encontrada em:\n${res.aiPrompt}`);
+      const httpErrorLine = promptLines[httpErrorLineIdx];
       assert.equal(
         httpErrorLine,
-        '1. [http_error] HTTP 500 on script /src/components/Pay.tsx - Transform failed with 1 error:',
+        '1. [http_error] HTTP 500 on script /src/components/Pay.tsx:2:98 - [PARSE_ERROR] Expected `,` or `}` but found `Identifier`',
       );
       const occurrencesInErrorLine = httpErrorLine.split('/src/components/Pay.tsx').length - 1;
       assert.equal(
         occurrencesInErrorLine,
         1,
         `Esperava /src/components/Pay.tsx apenas 1 vez na linha do erro, obtido ${occurrencesInErrorLine}: ${httpErrorLine}`,
+      );
+
+      // Verifica que [PARSE_ERROR] ... está no resumo e não aparece duplicado no codeFrame (que começa na moldura +-[ src/components/Pay.tsx:2:98 ] e termina em ---+)
+      const httpIssue = res.issues.find(
+        (i) => i.kind === 'http_error' && i.route === '/src/components/Pay.tsx',
+      );
+      assert.ok(httpIssue?.codeFrame, 'httpIssue.codeFrame deve existir');
+      assert.equal(
+        httpIssue.codeFrame.includes('[PARSE_ERROR]'),
+        false,
+        `[PARSE_ERROR] não deve aparecer duplicado no codeFrame:\n${httpIssue.codeFrame}`,
+      );
+      assert.match(httpIssue.codeFrame, /^\s*\+-\[\s*src\/components\/Pay\.tsx:2:98\s*\]/);
+      assert.match(httpIssue.codeFrame, /---\+$/);
+      assert.equal(
+        res.aiPrompt.split('[PARSE_ERROR]').length - 1,
+        1,
+        `[PARSE_ERROR] deve aparecer apenas 1 vez no aiPrompt:\n${res.aiPrompt}`,
+      );
+      assert.equal(
+        promptLines[httpErrorLineIdx + 1]?.trim(),
+        '+-[ src/components/Pay.tsx:2:98 ]',
+        `A primeira linha do codeFrame logo abaixo de 1. [http_error] deve ser a moldura +-[ ... ]:\n${res.aiPrompt}`,
+      );
+      assert.ok(
+        report.includes(
+          'HTTP 500 on script /src/components/Pay.tsx:2:98 - [PARSE_ERROR] Expected `,` or `}` but found `Identifier`',
+        ),
+        `Esperava resumo completo no report:\n${report}`,
       );
 
       // CodeFrame multilinhas do Vite 8 (Oxc) extraído de payload.message, molduras ASCII (+, -, |), posição 2:98 na moldura, sem /workspace/app e chave mascarada
@@ -746,5 +776,111 @@ describe('AI Fix Formatter & Terminal UI Reporter (BDD)', () => {
       detailContainsRoute('HTTP 500 on script /src/Pay-tsx', '/src/Pay.tsx'),
       false,
     );
+  });
+
+  it('10. Paridade texto puro vs JSON Oxc, precedência de payload.loc, falsos positivos [x:1:2]/arr[a:2:3] e N > 1 causas', () => {
+    const oxcPlainText = [
+      'Transform failed with 1 error:',
+      '',
+      '[PARSE_ERROR] Expected `,` or `}` but found `Identifier`',
+      '   ╭─[ src/components/Pay.tsx:2:98 ]',
+      '   │',
+      ' 2 │   const broken = { msg: "Olá, senha inválida" b: 2 };',
+      '   │                  ┬                            ┬  ',
+      '   │                  ╰────────────────────────────── Opened here',
+      '   │                                               │  ',
+      '   │                                               ╰── `,` or `}` expected',
+      '───╯',
+    ].join('\n');
+
+    // 10a. Paridade texto puro vs JSON
+    const fromPlain = extractViteErrorInfo(oxcPlainText, '/src/components/Pay.tsx');
+    const fromJson = extractViteErrorInfo(
+      `const error = ${JSON.stringify({ message: oxcPlainText, id: '/workspace/app/src/components/Pay.tsx', frame: '', plugin: 'vite:oxc' })};`,
+      '/src/components/Pay.tsx',
+    );
+    assert.ok(fromPlain);
+    assert.ok(fromJson);
+    assert.equal(
+      fromPlain.summary,
+      '/src/components/Pay.tsx:2:98 - [PARSE_ERROR] Expected `,` or `}` but found `Identifier`',
+    );
+    assert.equal(fromPlain.summary, fromJson.summary);
+    assert.ok(fromPlain.codeFrame);
+    assert.equal(fromPlain.codeFrame, fromJson.codeFrame);
+    assert.match(fromPlain.codeFrame, /^\s*\+-\[\s*src\/components\/Pay\.tsx:2:98\s*\]/);
+    assert.match(fromPlain.codeFrame, /---\+$/);
+    assert.equal(fromPlain.codeFrame.includes('[PARSE_ERROR]'), false);
+
+    // 10b. Teste negativo 1: payload.loc presente vence sobre o L:C da moldura Oxc
+    const withLocOverride = extractViteErrorInfo(
+      `const error = ${JSON.stringify({
+        message: oxcPlainText,
+        id: '/workspace/app/src/components/Pay.tsx',
+        loc: { file: '/workspace/app/src/components/Pay.tsx', line: 10, column: 5 },
+      })};`,
+      '/src/components/Pay.tsx',
+    );
+    assert.ok(withLocOverride);
+    assert.equal(
+      withLocOverride.summary,
+      '/src/components/Pay.tsx:10:5 - [PARSE_ERROR] Expected `,` or `}` but found `Identifier`',
+    );
+
+    // 10c. Teste negativo 2: código do usuário com [x:1:2] e arr[a:2:3] sem moldura ╭─[ / +-[ e sem payload.loc
+    const fakeBracketText = [
+      'Transform failed with 1 error:',
+      '[PARSE_ERROR] Unexpected token in [x:1:2]',
+      ' 2 | const val = arr[a:2:3]; [x:1:2]',
+      '   |                 ^',
+    ].join('\n');
+    const jsonNoFrameHeader = extractViteErrorInfo(
+      `const error = ${JSON.stringify({ message: fakeBracketText, id: '/src/components/Pay.tsx' })};`,
+      '/src/components/Pay.tsx',
+    );
+    const plainNoFrameHeader = extractViteErrorInfo(fakeBracketText, '/src/components/Pay.tsx');
+    assert.ok(jsonNoFrameHeader);
+    assert.ok(plainNoFrameHeader);
+    assert.equal(
+      jsonNoFrameHeader.summary,
+      '/src/components/Pay.tsx - [PARSE_ERROR] Unexpected token in [x:1:2]',
+    );
+    assert.equal(plainNoFrameHeader.summary, jsonNoFrameHeader.summary);
+    assert.equal(jsonNoFrameHeader.summary.includes('/src/components/Pay.tsx:1:2'), false);
+    assert.equal(jsonNoFrameHeader.summary.includes('/src/components/Pay.tsx:2:3'), false);
+
+    // 10d. Teste N > 1 causas: promove apenas a 1ª causa para o summary e mantém a 2ª no codeFrame
+    const multiCauseText = [
+      'Transform failed with 2 errors:',
+      '',
+      '[PARSE_ERROR] First error',
+      '   ╭─[ src/components/Pay.tsx:2:10 ]',
+      '   │',
+      ' 2 │   const a = ;',
+      '───╯',
+      '[PARSE_ERROR] Second error',
+      '   ╭─[ src/components/Pay.tsx:5:4 ]',
+      '   │',
+      ' 5 │   const b = ;',
+      '───╯',
+    ].join('\n');
+    const multiJson = extractViteErrorInfo(
+      `const error = ${JSON.stringify({ message: multiCauseText, id: '/src/components/Pay.tsx' })};`,
+      '/src/components/Pay.tsx',
+    );
+    const multiPlain = extractViteErrorInfo(multiCauseText, '/src/components/Pay.tsx');
+    assert.ok(multiJson);
+    assert.ok(multiPlain);
+    assert.equal(
+      multiJson.summary,
+      '/src/components/Pay.tsx:2:10 - [PARSE_ERROR] First error',
+    );
+    assert.equal(multiPlain.summary, multiJson.summary);
+    assert.ok(multiJson.codeFrame);
+    assert.ok(multiPlain.codeFrame);
+    assert.equal(multiJson.codeFrame.includes('[PARSE_ERROR] First error'), false);
+    assert.ok(multiJson.codeFrame.includes('[PARSE_ERROR] Second error'));
+    assert.equal(multiPlain.codeFrame.includes('[PARSE_ERROR] First error'), false);
+    assert.ok(multiPlain.codeFrame.includes('[PARSE_ERROR] Second error'));
   });
 });

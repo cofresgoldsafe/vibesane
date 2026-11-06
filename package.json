@@ -27,7 +27,7 @@
     "node": ">=22.13.0"
   },
   "bin": {
-    "vibesane": "./bin/vibesane.js"
+    "vibesane": "bin/vibesane.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
