@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { main } from '../dist/cli.js';
 import {
@@ -798,6 +799,109 @@ describe('Sanity Scanner Engine (BDD)', () => {
       } finally {
         await srv.close();
       }
+    });
+
+    it('10a. Fixture real capturada do Next 14.2 (app/layout.js do Portal com @supabase/auth-js): zero falsos positivos de senha (0 issues)', () => {
+      const fixtureUrl = new URL('./fixtures/next14-portal-layout-chunk.js', import.meta.url);
+      const chunk = readFileSync(fixtureUrl, 'utf8');
+
+      const issues = scanSecrets(chunk, '/_next/static/chunks/app/layout.js');
+      assert.equal(
+        issues.length,
+        0,
+        `Esperava 0 issues para o layout real com Supabase, mas recebeu: ${JSON.stringify(issues)}`,
+      );
+    });
+
+    it('10b. Fixture real do Next 16 webpack com Supabase: descarta exemplos JSDoc do auth-js mas detecta senha real em Checkout.tsx DEPOIS do import do Supabase', () => {
+      const fixtureUrl = new URL('./fixtures/next16-webpack-supabase-chunk.js', import.meta.url);
+      const chunk = readFileSync(fixtureUrl, 'utf8');
+
+      const issues = scanSecrets(chunk, '/_next/static/chunks/app/page.js');
+      assert.equal(
+        issues.length,
+        1,
+        `Esperava exatamente 1 issue (senha real no Checkout), mas recebeu: ${JSON.stringify(issues)}`,
+      );
+      assert.equal(issues[0].kind, 'secret_leak');
+      assert.equal(issues[0].severity, 'error');
+      assert.equal(issues[0].route, 'src/app/components/Checkout.tsx');
+      assert.match(issues[0].detail, /Hardcoded password \(M\*\*\*\)/);
+      assert.equal(issues[0].detail.includes('MinhaSenhaReal123'), false);
+    });
+
+    it('10c. Next 16 webpack: senha real em módulo ./src/... ANTES do módulo do Supabase continua detectada e atribuída a src/...', () => {
+      const chunkBefore = [
+        '(self["webpackChunk_N_E"] = self["webpackChunk_N_E"] || []).push([["app/page"],{',
+        '/***/ "(app-pages-browser)/./src/app/components/Sidebar.tsx":',
+        '/***/ (function(__unused_webpack_module, __webpack_exports__, __webpack_require__) {',
+        '  const creds = { password: "SenhaAntesDoSupabase123" };',
+        '}),',
+        '/***/ "(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/GoTrueClient.js":',
+        '/***/ (function(__unused_webpack_module, __webpack_exports__, __webpack_require__) {',
+        '  // JSDoc example: password: "some-password"',
+        '}),',
+        '}]);',
+      ].join('\n');
+
+      const issues = scanSecrets(chunkBefore, '/_next/static/chunks/app/page.js');
+      assert.equal(issues.length, 1);
+      assert.equal(issues[0].route, 'src/app/components/Sidebar.tsx');
+      assert.match(issues[0].detail, /Hardcoded password \(S\*\*\*\)/);
+      assert.equal(issues[0].detail.includes('SenhaAntesDoSupabase123'), false);
+    });
+
+    it('10d. Chave token de alta entropia (sk_live_) dentro de módulo node_modules continua sendo detectada e atribuída à rota do chunk', () => {
+      const fakeStripe = ['sk', 'live', '112233445566778899aabbcc'].join('_');
+      const chunkVendorSecret = [
+        '(self["webpackChunk_N_E"] = self["webpackChunk_N_E"] || []).push([["app/page"],{',
+        '/***/ "(app-pages-browser)/./node_modules/compromised-lib/index.js":',
+        '/***/ (function(__unused_webpack_module, __webpack_exports__, __webpack_require__) {',
+        `  const stripeKey = "${fakeStripe}";`,
+        '}),',
+        '}]);',
+      ].join('\n');
+
+      const issues = scanSecrets(chunkVendorSecret, '/_next/static/chunks/app/page.js');
+      assert.equal(issues.length, 1);
+      assert.equal(issues[0].kind, 'secret_leak');
+      assert.equal(issues[0].route, '/_next/static/chunks/app/page.js');
+      assert.ok(issues[0].detail.includes('sk_live_****bbcc'));
+      assert.equal(issues[0].detail.includes('112233445566778899'), false);
+    });
+
+    it('10e. Fixture Turbopack Next 16 com sufixo <locals> e <export default as AuthClient>: descarta exemplos de terceiros e detecta senha real em Checkout.tsx', () => {
+      const fixtureUrl = new URL('./fixtures/next16-turbopack-supabase-chunk.js', import.meta.url);
+      const chunk = readFileSync(fixtureUrl, 'utf8');
+
+      const issues = scanSecrets(chunk, '/_next/static/chunks/app/page.js');
+      assert.equal(
+        issues.length,
+        1,
+        `Esperava exatamente 1 issue no Turbopack (Checkout.tsx), mas recebeu: ${JSON.stringify(issues)}`,
+      );
+      assert.equal(issues[0].kind, 'secret_leak');
+      assert.equal(issues[0].route, 'src/app/components/Checkout.tsx');
+      assert.match(issues[0].detail, /Hardcoded password \(M\*\*\*\)/);
+      assert.equal(issues[0].detail.includes('MinhaSenhaReal123'), false);
+    });
+
+    it('10f. Monorepo webpack (../packages/ui/src/Button.tsx): reconhece caminhos subindo diretório como módulo da aplicação', () => {
+      const monorepoChunk = [
+        '(self["webpackChunk_N_E"] = self["webpackChunk_N_E"] || []).push([["app/page"],{',
+        '/***/ "(app-pages-browser)/../packages/ui/src/Button.tsx":',
+        '/***/ (function(__unused_webpack_module, __webpack_exports__, __webpack_require__) {',
+        '  const creds = { password: "MonorepoSecret123" };',
+        '}),',
+        '}]);',
+      ].join('\n');
+
+      const issues = scanSecrets(monorepoChunk, '/_next/static/chunks/app/page.js');
+      assert.equal(issues.length, 1);
+      assert.equal(issues[0].kind, 'secret_leak');
+      assert.equal(issues[0].route, 'packages/ui/src/Button.tsx');
+      assert.match(issues[0].detail, /Hardcoded password \(M\*\*\*\)/);
+      assert.equal(issues[0].detail.includes('MonorepoSecret123'), false);
     });
   });
 });

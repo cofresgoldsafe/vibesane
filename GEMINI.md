@@ -2,9 +2,9 @@
 
 ## Status do Plano Ativo (2026-11-06)
 - **Versão atual publicada:** `v0.1.1` (npm + GitHub Releases `v0.1.0` e `v0.1.1`)
-- **Branch:** `fix/codeframe-db-uri-leak`
-- **Última tarefa concluída:** **Fix v0.1.2 (Prevenção de Vazamento de Senhas de URIs de Banco em `codeFrame` e Mensagens de Erro)** — Inversão da ordem de sanitização em 4 pontos (`scrubAbsolutePathsInText(sanitizeSecretsInText(...))`), adição de lookbehind negativo `(?<![A-Za-z0-9+.-])` na regex de unidade de disco Windows evitando falsa captura de esquemas URI (`s:/`), testes 11, 12 e 13 em `test/reporter.test.mjs` (`86/86` testes passando) e preservação estrita de acentos UTF-8 e caminhos limpos.
-- **Próxima tarefa:** Commit na branch `fix/codeframe-db-uri-leak`, push e abertura do PR para a `main`.
+- **Branch:** `fix/ignore-third-party-module-secrets`
+- **Última tarefa concluída:** **Fix v0.1.2 (Ignorar Segredos de Atribuição em Módulos de Terceiros e Fronteiras Estritas de Bundle)** — Resolução precisa de fronteiras de módulo via `WEBPACK_MODULE_DEF_RE` (com suporte a monorepos `\.\.?\/`) e `TURBOPACK_MODULE_DEF_RE` (com suporte a `<locals>` e `<export default as ...>`), extração única em `O(N)` com cache por chunk e busca binária, descarte seletivo de regras de atribuição (`kind === 'assignment'`) em código de terceiros (`node_modules`, `next/dist`), preservação de regras `token` (`sk_live_`, `ghp_`, etc.) mesmo em terceiros atribuídas ao chunk servido, eliminação de falsos positivos no Next 14.2 e Next 16 com `@supabase/supabase-js`, e 6 novos testes (10a a 10f) em `test/sanity-scanner.test.mjs` (`92/92` testes passando).
+- **Próxima tarefa:** Commit na branch `fix/ignore-third-party-module-secrets`, push e abertura do PR para a `main`.
 
 ---
 
@@ -64,3 +64,9 @@
     - *Teste 11:* Oxc/Vite (JSON e texto puro) mascarando senhas em `postgres://`, `postgresql://`, `mysql://` e `mongodb+srv://` no summary, codeFrame e prompt mantendo o esquema intacto.
     - *Teste 12:* Next.js (`extractNextErrorInfo`) mascarando senhas nas mesmas URIs de banco.
     - *Teste 13:* Regressão para limpeza de caminhos absolutos Windows (`C:\`, `D:/`) e Unix (`/Users/`), mascaramento de chave Stripe (`sk_live_`) e integridade de acentuação UTF-8 ("Olá") no codeFrame.
+- `2026-11-06` — **Fix v0.1.2 (`fix/ignore-third-party-module-secrets` — Descarte de Segredos de Atribuição em Terceiros & Fronteiras Estritas de Bundle):**
+  - **Causa do bug:** (1) Em chunks compilados Webpack e Turbopack, marcadores de módulos de terceiros (`node_modules`) não contavam como fronteira de módulo (ou eram ignorados com `continue`), fazendo exemplos de documentação JSDoc (ex.: `@supabase/auth-js` com `password: 'some-password'`) serem atribuídos indevidamente ao último módulo de aplicação no bundle; (2) Falso negativo crítico evitado: referências de importação inline (`__webpack_require__(...node_modules...)` e `__turbopack_context__.i(...)`) dentro do código do usuário não qualificam como fronteira, impedindo que senhas reais do usuário após imports fossem descartadas.
+  - **Definições Estritas de Fronteiras:** `WEBPACK_MODULE_DEF_RE` ancorada no início da linha com suporte a monorepos (`/^[\t ]*\/\*\*\*\/ "(?:\([A-Za-z0-9_-]+\)\/)?\.\.?\/([^"\r\n]+)":/gm`) e `TURBOPACK_MODULE_DEF_RE` ancorada na assinatura da função com suporte a tags (`/"\[project\]\/([^"\s]+)(?:\s+\[[^\]\r\n]+\])?(?:\s+\((?:ecmascript|hmr-entry)\))?(?:\s+<[^>"\r\n]+>)?"\s*[,:]\s*\(?\(?__turbopack_context__/g`).
+  - **Desempenho O(N) e Busca Binária:** As fronteiras são extraídas exatamente uma única vez por conteúdo em `scanSecrets` e cacheadas em memória, com indexação binária `O(log K)`.
+  - **Descarte Seletivo:** Achados de regras `kind === 'assignment'` (`hardcoded-password`, `env-secret`, `database-url`) dentro de `node_modules`/`next/dist` são descartados silenciosamente; achados de regras `kind === 'token'` (`stripe-secret`, `google-api-key`, etc.) continuam sendo reportados com severidade `'error'` atribuídos à rota do chunk.
+  - **Fixtures & Testes 10a a 10f em `test/sanity-scanner.test.mjs` (`92/92` testes passando):** Fixture real do Next 14.2 (Portal) reduzida para 4,1 KB e 100% anonimizada (0 issues), fixtures transparentes do Next 16 (Webpack e Turbopack) provando detecção de senha real em `Checkout.tsx` pós-import do Supabase, token Stripe em `node_modules` mantido e suporte a monorepo `../packages/ui/src/Button.tsx`.
