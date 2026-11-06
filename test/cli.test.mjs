@@ -251,8 +251,8 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
     it('npm pack --dry-run --json gera pacote < 500 KB contendo apenas arquivos permitidos', () => {
       const res =
         process.platform === 'win32'
-          ? spawnSync('npm pack --dry-run --json', { shell: true, encoding: 'utf8' })
-          : spawnSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf8' });
+          ? spawnSync('npm pack --dry-run --json --ignore-scripts', { shell: true, encoding: 'utf8' })
+          : spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { encoding: 'utf8' });
       assert.equal(res.status, 0, `npm pack falhou: ${res.stderr}`);
       const pack = JSON.parse(res.stdout);
       assert.ok(Array.isArray(pack) && pack.length > 0, 'Saída JSON do npm pack inválida');
