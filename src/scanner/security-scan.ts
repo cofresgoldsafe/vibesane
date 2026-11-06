@@ -73,47 +73,96 @@ export function detectMaskedError(html: string, route: string): SanityIssue[] {
   return [];
 }
 
-const TURBOPACK_MODULE_MARKER_RE =
-  /\[project\]\/([A-Za-z0-9_./[\]-]+\.[A-Za-z0-9]+)(?:\s+\[[^\]]+\])?(?:\s+\((?:ecmascript|hmr-entry)\))?/g;
-const WEBPACK_MODULE_MARKER_RE =
-  /(?:\([A-Za-z0-9_-]+\)\/)?\.\.?\/((?:src|app|pages|components)\/[A-Za-z0-9_./[\]-]+\.[A-Za-z0-9]+)/g;
+interface ModuleBoundary {
+  readonly index: number;
+  readonly path: string;
+  readonly isThirdParty: boolean;
+}
+
+const WEBPACK_MODULE_DEF_RE =
+  /^[\t ]*\/\*\*\*\/ "(?:\([A-Za-z0-9_-]+\)\/)?\.\.?\/([^"\r\n]+)":/gm;
+
+const TURBOPACK_MODULE_DEF_RE =
+  /"\[project\]\/([^"\s]+)(?:\s+\[[^\]\r\n]+\])?(?:\s+\((?:ecmascript|hmr-entry)\))?(?:\s+<[^>"\r\n]+>)?"\s*[,:]\s*\(?\(?__turbopack_context__/g;
+
+function extractModuleBoundaries(content: string): ModuleBoundary[] {
+  if (!content) {
+    return [];
+  }
+
+  const boundaries: ModuleBoundary[] = [];
+
+  WEBPACK_MODULE_DEF_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = WEBPACK_MODULE_DEF_RE.exec(content)) !== null) {
+    const rawPath = match[1]?.trim();
+    if (!rawPath) {
+      continue;
+    }
+    const cleanPath = rawPath.replace(/^\/+/, '');
+    boundaries.push({
+      index: match.index,
+      path: cleanPath,
+      isThirdParty: isIgnoredBundledModulePath(cleanPath),
+    });
+  }
+
+  TURBOPACK_MODULE_DEF_RE.lastIndex = 0;
+  while ((match = TURBOPACK_MODULE_DEF_RE.exec(content)) !== null) {
+    const rawPath = match[1]?.trim();
+    if (!rawPath) {
+      continue;
+    }
+    const cleanPath = rawPath.replace(/^\/+/, '');
+    boundaries.push({
+      index: match.index,
+      path: cleanPath,
+      isThirdParty: isIgnoredBundledModulePath(cleanPath),
+    });
+  }
+
+  boundaries.sort((a, b) => a.index - b.index);
+  return boundaries;
+}
+
+function findModuleBoundary(
+  boundaries: readonly ModuleBoundary[],
+  matchIndex: number,
+): ModuleBoundary | null {
+  if (boundaries.length === 0 || matchIndex < 0) {
+    return null;
+  }
+
+  let low = 0;
+  let high = boundaries.length - 1;
+  let best: ModuleBoundary | null = null;
+
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const item = boundaries[mid]!;
+    if (item.index <= matchIndex) {
+      best = item;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return best;
+}
 
 export function resolveBundledSourceFile(content: string, matchIndex: number): string | null {
   if (!content || matchIndex <= 0) {
     return null;
   }
 
-  const prefix = content.slice(0, matchIndex);
-  let bestIndex = -1;
-  let bestPath: string | null = null;
-
-  let match: RegExpExecArray | null;
-
-  TURBOPACK_MODULE_MARKER_RE.lastIndex = 0;
-  while ((match = TURBOPACK_MODULE_MARKER_RE.exec(prefix)) !== null) {
-    const candidate = match[1]?.trim();
-    if (!candidate || isIgnoredBundledModulePath(candidate)) {
-      continue;
-    }
-    if (match.index > bestIndex) {
-      bestIndex = match.index;
-      bestPath = candidate.replace(/^\/+/, '');
-    }
+  const boundaries = extractModuleBoundaries(content);
+  const boundary = findModuleBoundary(boundaries, matchIndex);
+  if (!boundary || boundary.isThirdParty) {
+    return null;
   }
 
-  WEBPACK_MODULE_MARKER_RE.lastIndex = 0;
-  while ((match = WEBPACK_MODULE_MARKER_RE.exec(prefix)) !== null) {
-    const candidate = match[1]?.trim();
-    if (!candidate || isIgnoredBundledModulePath(candidate)) {
-      continue;
-    }
-    if (match.index > bestIndex) {
-      bestIndex = match.index;
-      bestPath = candidate.replace(/^\/+/, '');
-    }
-  }
-
-  return bestPath;
+  return boundary.path;
 }
 
 export function scanSecrets(content: string, route: string): SanityIssue[] {
@@ -123,20 +172,19 @@ export function scanSecrets(content: string, route: string): SanityIssue[] {
 
   const issues: SanityIssue[] = [];
   const seen = new Set<string>();
+  const boundaries = extractModuleBoundaries(content);
 
   const pushIssue = (
     label: string,
     rawSecret: string,
+    targetRoute: string,
     customMasked?: string,
-    matchIndex?: number,
   ): void => {
     if (isPublicStripeKey(rawSecret)) {
       return;
     }
-    const resolvedSource =
-      (matchIndex !== undefined ? resolveBundledSourceFile(content, matchIndex) : null) ?? route;
     const masked = customMasked ?? redactSecret(rawSecret);
-    const dedupeKey = `${resolvedSource}::${label}::${masked}`;
+    const dedupeKey = `${targetRoute}::${label}::${masked}`;
     if (seen.has(dedupeKey)) {
       return;
     }
@@ -144,8 +192,8 @@ export function scanSecrets(content: string, route: string): SanityIssue[] {
     issues.push({
       kind: 'secret_leak',
       severity: 'error',
-      route: resolvedSource,
-      detail: `Secret leak on ${resolvedSource}: ${label} (${masked})`,
+      route: targetRoute,
+      detail: `Secret leak on ${targetRoute}: ${label} (${masked})`,
       maskedSnippet: masked,
     });
   };
@@ -167,10 +215,21 @@ export function scanSecrets(content: string, route: string): SanityIssue[] {
       if (!rule.accept(rawSecret, ctx)) {
         continue;
       }
+
+      const boundary = findModuleBoundary(boundaries, match.index);
+      if (boundary?.isThirdParty) {
+        if (rule.kind === 'assignment') {
+          continue;
+        }
+      }
+
+      const targetRoute =
+        boundary && !boundary.isThirdParty ? boundary.path : route;
+
       const resolvedLabel =
         typeof rule.label === 'function' ? rule.label(match) : rule.label;
       const customMasked = rule.mask ? rule.mask(rawSecret) : undefined;
-      pushIssue(resolvedLabel, rawSecret, customMasked, match.index);
+      pushIssue(resolvedLabel, rawSecret, targetRoute, customMasked);
     }
   }
 
