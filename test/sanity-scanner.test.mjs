@@ -1501,4 +1501,228 @@ describe('Sanity Scanner Engine (BDD)', () => {
       }
     });
   });
+
+  describe('13. Extração de Chunks RSC Flight em Páginas Dinâmicas do Next 16 (v0.1.4)', () => {
+    it('13a. Fixture real capturada do Next 16.4.5 (webpack) com página dinâmica (await connection()): extrai chunk do payload RSC e detecta segredo em Checkout.tsx', async () => {
+      const htmlUrl = new URL('./fixtures/next16-webpack-dynamic-page.html', import.meta.url);
+      const chunkUrl = new URL('./fixtures/next16-webpack-dynamic-chunk.js', import.meta.url);
+      const dynamicHtml = readFileSync(htmlUrl, 'utf8');
+      const dynamicChunkRaw = readFileSync(chunkUrl, 'utf8');
+
+      // Monta a chave falsa sem sk_live_ literal para evitar bloqueio pelo detector de segredos do GitHub
+      const fakeStripeKey = ['sk', 'live', '51Habcdefghijklmnop1234'].join('_');
+      const dynamicChunk = dynamicChunkRaw.replace('__VIBESANE_TEST_STRIPE_KEY__', fakeStripeKey);
+
+      let chunkRequests = 0;
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(dynamicHtml);
+          return;
+        }
+        if (url === '/_next/static/chunks/app/page.js') {
+          chunkRequests += 1;
+          res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+          res.end(dynamicChunk);
+          return;
+        }
+        if (url === '/_next/static/chunks/app-pages-internals.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+          res.end('/* next app-pages-internals */');
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        // Deve falhar o scan por causa da chave vazada no componente Checkout
+        assert.equal(res.ok, false);
+        assert.equal(chunkRequests, 1, 'Chunk app/page.js deve ser baixado exatamente uma vez');
+
+        const secretIssues = res.issues.filter((i) => i.kind === 'secret_leak');
+        assert.equal(secretIssues.length, 1);
+        assert.equal(secretIssues[0].severity, 'error');
+        assert.equal(secretIssues[0].route, 'src/app/components/Checkout.tsx');
+        assert.ok(
+          secretIssues[0].detail.includes('sk_live_****1234'),
+          `Esperava detalhe com segredo mascarado, obteve: ${secretIssues[0].detail}`,
+        );
+
+        // A linha de cobertura deve reportar 1 página e 2 scripts inspecionados (app/page.js e app-pages-internals.js)
+        assert.ok(
+          res.message.includes('info: checked 1 page, 2 scripts'),
+          `Esperava linha de cobertura com 1 page, 2 scripts:\n${res.message}`,
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('13b. Route groups e segmentos dinâmicos codificados: extrai chunks app/(shop)/cart/page.js e app/blog/%5Bslug%5D/page.js', () => {
+      const flightHtml = `
+        <!DOCTYPE html>
+        <html>
+          <body>
+            <script>
+              self.__next_f.push([1,"80:\\"static/chunks/app/(shop)/cart/page.js\\"\\n81:\\"static/chunks/app/blog/%5Bslug%5D/page.js\\"\\n82:\\"/_next/static/chunks/app/(dashboard)/settings/page.js\\"\\n"]);
+            </script>
+          </body>
+        </html>
+      `;
+
+      const scripts = selectScriptsToFetch(flightHtml, 'http://localhost:3000', 10);
+      assert.deepEqual(scripts, [
+        '/_next/static/chunks/app/(shop)/cart/page.js',
+        '/_next/static/chunks/app/blog/%5Bslug%5D/page.js',
+        '/_next/static/chunks/app/(dashboard)/settings/page.js',
+      ]);
+    });
+
+    it('13c. Deduplicação uniforme pelo caminho normalizado: static/chunks/x.js, /_next/static/chunks/x.js e <script src> geram 1 requisição e ocupam 1 vaga', async () => {
+      // Página estática onde o chunk vem tanto em <script src> quanto em static/chunks/ e /_next/static/chunks/ no payload
+      const htmlDuplicate = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <script src="/_next/static/chunks/app/page.js"></script>
+          </head>
+          <body>
+            <script>
+              self.__next_f.push([1,"80:\\"static/chunks/app/page.js\\"\\n81:\\"/_next/static/chunks/app/page.js\\"\\n82:\\"static/chunks/app/page.js\\"\\n"]);
+            </script>
+          </body>
+        </html>
+      `;
+
+      // 1. Verificação pura do extrator
+      const candidates = selectScriptsToFetch(htmlDuplicate, 'http://localhost:3000', 5);
+      assert.deepEqual(candidates, ['/_next/static/chunks/app/page.js']);
+
+      // 2. Verificação de rede em execução real
+      let fetchCount = 0;
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(htmlDuplicate);
+          return;
+        }
+        if (url === '/_next/static/chunks/app/page.js') {
+          fetchCount += 1;
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end('console.log("clean chunk");');
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.equal(fetchCount, 1, 'Chunk deduplicado deve receber exatamente 1 requisição GET');
+        assert.ok(res.message.includes('info: checked 1 page, 1 script'));
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('13d. Prioridade sob limite maxScripts (teto de 5): chunks da aplicação app/... (prioridade 1) ganham de genéricos (prioridade 2)', () => {
+      const htmlOverLimit = `
+        <!DOCTYPE html>
+        <html>
+          <body>
+            <script>
+              self.__next_f.push([1,"80:\\"static/chunks/vendor-a.js\\"\\n81:\\"static/chunks/vendor-b.js\\"\\n82:\\"static/chunks/vendor-c.js\\"\\n83:\\"static/chunks/app/page.js\\"\\n84:\\"static/chunks/app/header.js\\"\\n85:\\"static/chunks/app/footer.js\\"\\n"]);
+            </script>
+          </body>
+        </html>
+      `;
+
+      // maxScripts: 5 -> Temos 3 chunks app/... (prioridade 1) e 3 chunks vendor (prioridade 2)
+      // Os 3 app/... DEVEM ser escolhidos, seguidos pelos 2 primeiros vendor (total 5)
+      const selected = selectScriptsToFetch(htmlOverLimit, 'http://localhost:3000', 5);
+      assert.equal(selected.length, 5);
+
+      // Prioridade 1 vêm primeiro
+      assert.equal(selected[0], '/_next/static/chunks/app/page.js');
+      assert.equal(selected[1], '/_next/static/chunks/app/header.js');
+      assert.equal(selected[2], '/_next/static/chunks/app/footer.js');
+      // Prioridade 2 vêm em seguida
+      assert.equal(selected[3], '/_next/static/chunks/vendor-a.js');
+      assert.equal(selected[4], '/_next/static/chunks/vendor-b.js');
+      assert.equal(selected.includes('/_next/static/chunks/vendor-c.js'), false, '6º chunk deve ser descartado pelo teto de 5');
+    });
+
+    it('13e. Casos negativos: URLs externas (https://, //) e texto fora de string não são agendados', () => {
+      const htmlNegatives = `
+        <!DOCTYPE html>
+        <html>
+          <body>
+            <!-- URLs externas sob static/chunks nunca devem ser agendadas -->
+            <a href="https://cdn.example.com/static/chunks/app/page.js">External CDN</a>
+            <img src="//cdn.other.com/static/chunks/app/page.js"/>
+            
+            <!-- Texto fora de aspas não deve ser casado -->
+            <p>Consulte static/chunks/app/page.js em nossa documentação técnica.</p>
+
+            <!-- Referências de módulo Webpack sem ser chunk static/chunks -->
+            <script>
+              self.__next_f.push([1,"80:\\"(app-pages-browser)/./src/app/components/Checkout.tsx\\"\\n81:I[\\"$80\\",[\\"app/page\\",\\"$81\\"],\\"default\\"]\\n"]);
+            </script>
+          </body>
+        </html>
+      `;
+
+      const selected = selectScriptsToFetch(htmlNegatives, 'http://localhost:3000', 5);
+      assert.deepEqual(selected, [], 'Nenhum script deve ser extraído dos casos negativos');
+    });
+
+    it('13f. Turbopack: comportamento idêntico à main sem duplicar requisições', async () => {
+      // No Turbopack o chunk já vem em <script src> e também no flight payload
+      const turbopackHtml = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <script src="/_next/static/chunks/app/page.js"></script>
+          </head>
+          <body>
+            <script>
+              self.__next_f.push([1,"80:\\"static/chunks/app/page.js\\"\\n"]);
+            </script>
+          </body>
+        </html>
+      `;
+
+      let reqCount = 0;
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(turbopackHtml);
+          return;
+        }
+        if (url === '/_next/static/chunks/app/page.js') {
+          reqCount += 1;
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end('console.log("turbopack");');
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.equal(reqCount, 1);
+        assert.ok(res.message.includes('info: checked 1 page, 1 script'));
+      } finally {
+        await srv.close();
+      }
+    });
+  });
 });
