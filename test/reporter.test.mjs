@@ -1071,6 +1071,7 @@ describe('v0.1.2 - Mascaramento de URIs de banco no codeFrame e mensagens de err
       message: [
         'vibesane: connected to http://localhost:3000 (15ms)',
         'warning [truncated_body]: response body truncated on script /app.js (exceeded 8 MB limit)',
+        'info: checked 1 page, 1 script',
       ].join('\n'),
       issues: [
         {
