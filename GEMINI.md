@@ -1,11 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-06)
-- **Versão atual em desenvolvimento:** `v0.1.3` (branch `feat/coverage-line`)
-- **Versão atual publicada:** `v0.1.2` (npm + GitHub Releases `v0.1.0`, `v0.1.1` e `v0.1.2`)
-- **Branch:** `feat/coverage-line`
-- **Última tarefa concluída:** **Linha de Cobertura Universal & Diagnóstico Contextualizado (v0.1.3)** — Implementada a linha de cobertura `info: checked <N> page(s), <M> script(s)` em `formatScanMessage`, contagem uniforme de páginas sem status 3xx, diagnóstico contextualizado para dev server lento e redirects externos fora do servidor local, omissão de query strings em avisos de redirect lento, atualização dos exemplos do README recapturados de execuções reais e 9 novos testes BDD totalizando 112/112 testes passando.
-- **Próxima tarefa:** Submeter PR para merge na `main` via "Rebase and merge" e posterior release v0.1.3.
+- **Versão atual publicada:** `v0.1.3` (npm + GitHub Releases `v0.1.0`, `v0.1.1`, `v0.1.2` e `v0.1.3`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.3 (Linha de Cobertura Universal, Diagnóstico de Servidor Frio & Isenção de Status 3xx)** — PR #10 mergeado na `main` com 12/12 checks aprovados no CI. Implementada linha de cobertura universal (`info: checked <N> page(s), <M> script(s)`), contagem uniforme de páginas sem status 3xx, diagnóstico contextualizado para 0 páginas lidas, omissão de query strings em avisos de redirect lento, isenção de inspeção de conteúdo em respostas 3xx (eliminando falso positivo de `NEXT_REDIRECT` no Next 16) e suíte BDD ampliada para 114/114 testes passando.
+- **Próxima tarefa:** Candidata: Investigação e suporte para páginas Next.js dinâmicas (`cookies()`, `connection()`, etc.) cujos scripts não aparecem no HTML inicial.
 
 ---
 
