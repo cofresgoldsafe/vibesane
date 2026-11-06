@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-06)
-- **Versão atual publicada:** `v0.1.1` (npm + GitHub Releases `v0.1.0` e `v0.1.1`)
-- **Branch:** `fix/large-dev-chunk-body-limit`
-- **Última tarefa concluída:** **Fix v0.1.2 (Leitura de scripts JS até 8 MB e Transparência de Truncamento `[truncated_body]` — PR a ser aberto)** — Ampliação do teto de leitura para scripts/módulos JS de 1 MB para 8 MB (`MAX_SCRIPT_BODY_BYTES = 8 * 1024 * 1024`) com timeout dedicado de 1000 ms (`DEFAULT_SCRIPT_BODY_READ_TIMEOUT_MS`), mantendo 1 MB (`MAX_BODY_BYTES`) e 500 ms para páginas HTML e `GET /` raiz; identificação precisa do motivo real de truncamento (`size`, `timeout`, `error`) em `readBoundedTextBody` com suporte a tamanho exato (`remaining <= 0` e `chunk.byteLength > remaining`); emissão de aviso não fatal `warning [truncated_body]` com severidade `'warning'` (mantendo `ok: true`, exit code 0 e excluído do AI FIX PROMPT); eliminação do falso negativo em chunks Webpack grandes onde módulos de aplicação ficavam após 1 MB (Next 16 `--webpack` e Next 14); validação no Red Team real (Next 16 `--webpack` com 4 segredos em `Checkout.tsx`, Turbopack e Vite 8 idênticos à main, e Portal Next 14.2 do Alexandre em 513 ms); 103/103 testes passando em `node:test` (11 novos testes).
-- **Próxima tarefa:** Aprovar e mergear PR da branch `fix/large-dev-chunk-body-limit` e preparar publicação da release `v0.1.2`.
+- **Versão atual publicada:** `v0.1.2` (npm + GitHub Releases `v0.1.0`, `v0.1.1` e `v0.1.2`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Publicação da Release v0.1.2** — GitHub Release `v0.1.2` publicada com notas completas cobrindo (1) mascaramento seguro de senhas em URIs de banco (`postgres://user:****@...`), (2) descarte de falsos positivos de `Hardcoded password` em exemplos JSDoc/código de terceiros em `node_modules` com fronteiras estritas de bundle, e (3) leitura de chunks de desenvolvimento até 8 MB com transparência em `[truncated_body]`. npm já publicado em `0.1.2`, tag git `v0.1.2` sincronizada e suíte 100% verde com 103/103 testes.
+- **Próxima tarefa:** Aguardar novos direcionamentos ou demandas de produto.
 
 ---
 
