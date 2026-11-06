@@ -54,6 +54,8 @@ function startEphemeralHttpServer() {
 }
 
 describe('vibesane CLI & Programmatic API (BDD)', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+
   it('runVibesane programático exporta EXIT_CODES, conecta a servidor ativo e valida faixas de porta', async () => {
     assert.deepEqual(EXIT_CODES, { OK: 0, SANITY_FAILURE: 1, USAGE_ERROR: 2 });
 
@@ -140,19 +142,17 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
       assert.equal(res.stderr, '');
     });
 
-    it('--version retorna 0 e exibe a versão de package.json (0.1.0)', async () => {
-      const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    it('--version retorna 0 e exibe a versão de package.json', async () => {
       const res = await runCli(['--version']);
       assert.equal(res.code, 0);
       assert.equal(res.stdout.trim(), pkg.version);
-      assert.equal(res.stdout.trim(), '0.1.0');
       assert.equal(res.stderr, '');
     });
 
-    it('-v retorna 0 e exibe a versão de package.json (0.1.0)', async () => {
+    it('-v retorna 0 e exibe a versão de package.json', async () => {
       const res = await runCli(['-v']);
       assert.equal(res.code, 0);
-      assert.equal(res.stdout.trim(), '0.1.0');
+      assert.equal(res.stdout.trim(), pkg.version);
       assert.equal(res.stderr, '');
     });
   });
@@ -175,7 +175,7 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
     it('main(["--version", "--port", "abc"]) retorna 0, exibe versão e ignora porta inválida', async () => {
       const res = await runCli(['--version', '--port', 'abc']);
       assert.equal(res.code, 0);
-      assert.equal(res.stdout.trim(), '0.1.0');
+      assert.equal(res.stdout.trim(), pkg.version);
       assert.equal(res.stderr, '');
     });
 
@@ -196,7 +196,7 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
     it('main(["--version", "--unknown"]) retorna 0 e exibe versão', async () => {
       const res = await runCli(['--version', '--unknown']);
       assert.equal(res.code, 0);
-      assert.equal(res.stdout.trim(), '0.1.0');
+      assert.equal(res.stdout.trim(), pkg.version);
       assert.equal(res.stderr, '');
     });
   });
@@ -236,7 +236,7 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
       const output = execFileSync(process.execPath, ['bin/vibesane.js', '--version'], {
         encoding: 'utf8',
       });
-      assert.equal(output, '0.1.0\n');
+      assert.equal(output, `${pkg.version}\n`);
     });
 
     it('bin/vibesane.js possui quebras de linha LF e shebang válido', () => {
