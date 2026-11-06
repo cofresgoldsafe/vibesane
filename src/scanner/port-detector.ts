@@ -4,6 +4,8 @@ import { performance } from 'node:perf_hooks';
 export const DEFAULT_PORTS = [3000, 3001, 5173, 5174, 8080, 8000, 4321] as const;
 export const DEFAULT_TCP_TIMEOUT_MS = 300;
 export const DEFAULT_HTTP_TIMEOUT_MS = 2000;
+export const DEFAULT_BODY_READ_TIMEOUT_MS = 500;
+export const MAX_BODY_BYTES = 1024 * 1024;
 
 export type LoopbackHost = '127.0.0.1' | '::1';
 export type DetectionFailureReason = 'no_server' | 'non_http' | 'http_timeout';
@@ -22,6 +24,16 @@ export interface TcpProbeResult {
   elapsedMs: number;
 }
 
+export interface RootHttpSnapshot {
+  path: string;
+  statusCode: number;
+  contentType: string;
+  location?: string;
+  body: string;
+  headersElapsedMs: number;
+  truncated: boolean;
+}
+
 export interface PortDetectionResult {
   ok: boolean;
   port: number | null;
@@ -32,6 +44,7 @@ export interface PortDetectionResult {
   alsoActivePorts: number[];
   checkedPorts: number[];
   reason?: DetectionFailureReason;
+  rootResponse?: RootHttpSnapshot;
 }
 
 export function assertValidPort(port: number): void {
@@ -44,6 +57,109 @@ export function assertValidTimeout(ms: number, name = 'timeout'): void {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) {
     throw new RangeError(`Invalid ${name} "${ms}": expected positive finite number`);
   }
+}
+
+function isTextLikeContentType(contentType: string): boolean {
+  const lower = contentType.toLowerCase();
+  if (lower === '') {
+    return true;
+  }
+  return (
+    lower.includes('text/') ||
+    lower.includes('html') ||
+    lower.includes('json') ||
+    lower.includes('javascript') ||
+    lower.includes('ecmascript') ||
+    lower.includes('xml')
+  );
+}
+
+export async function readBoundedTextBody(
+  res: Response,
+  maxBytes: number = MAX_BODY_BYTES,
+  bodyTimeoutMs: number = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<{ body: string; truncated: boolean }> {
+  const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
+  if (!isTextLikeContentType(contentType)) {
+    await res.body?.cancel().catch(() => {});
+    return { body: '', truncated: false };
+  }
+
+  if (!res.body) {
+    return { body: '', truncated: false };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  const parts: string[] = [];
+  let totalBytes = 0;
+  let truncated = false;
+  let timedOut = false;
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<{ kind: 'timeout' }>((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      truncated = true;
+      void reader.cancel().catch(() => {});
+      resolve({ kind: 'timeout' });
+    }, bodyTimeoutMs);
+  });
+
+  try {
+    while (!timedOut) {
+      const readPromise = reader.read().then(
+        (result) => ({ kind: 'chunk' as const, result }),
+        () => ({ kind: 'error' as const }),
+      );
+      const outcome = await Promise.race([readPromise, timeoutPromise]);
+
+      if (outcome.kind === 'timeout') {
+        truncated = true;
+        break;
+      }
+
+      if (outcome.kind === 'error') {
+        truncated = true;
+        await reader.cancel().catch(() => {});
+        break;
+      }
+
+      const { done, value: chunk } = outcome.result;
+      if (done) {
+        break;
+      }
+
+      if (!chunk || chunk.byteLength === 0) {
+        continue;
+      }
+
+      const remaining = maxBytes - totalBytes;
+      if (chunk.byteLength >= remaining) {
+        const slice = chunk.subarray(0, remaining);
+        if (slice.byteLength > 0) {
+          parts.push(decoder.decode(slice, { stream: true }));
+          totalBytes += slice.byteLength;
+        }
+        truncated = true;
+        await reader.cancel().catch(() => {});
+        break;
+      }
+
+      parts.push(decoder.decode(chunk, { stream: true }));
+      totalBytes += chunk.byteLength;
+    }
+  } catch {
+    truncated = true;
+    await reader.cancel().catch(() => {});
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+  }
+
+  parts.push(decoder.decode());
+  return { body: parts.join(''), truncated };
 }
 
 export function probeTcpPort(
@@ -269,12 +385,20 @@ export async function detectServer(
   const displayUrl = `http://localhost:${winnerPort}`;
 
   try {
+    const fetchStart = performance.now();
     const res = await fetch(targetUrl, {
       method: 'GET',
       redirect: 'manual',
       signal: AbortSignal.timeout(httpTimeoutMs),
     });
-    await res.body?.cancel().catch(() => {});
+    const headersElapsedMs = Math.max(0, Math.round(performance.now() - fetchStart));
+    const contentType = res.headers.get('content-type') ?? '';
+    const location = res.headers.get('location') ?? undefined;
+    const { body, truncated } = await readBoundedTextBody(
+      res,
+      MAX_BODY_BYTES,
+      DEFAULT_BODY_READ_TIMEOUT_MS,
+    );
 
     return {
       ok: true,
@@ -285,6 +409,15 @@ export async function detectServer(
       elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
       alsoActivePorts,
       checkedPorts,
+      rootResponse: {
+        path: '/',
+        statusCode: res.status,
+        contentType,
+        location,
+        body,
+        headersElapsedMs,
+        truncated,
+      },
     };
   } catch (err: unknown) {
     const isTimeout =
