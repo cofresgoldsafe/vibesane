@@ -57,6 +57,8 @@ const ANCHOR_HREF_RE = /<a\b[^>]*?\bhref\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/gi
 const SCRIPT_SRC_RE = /<script\b[^>]*?\bsrc\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/gi;
 const STATIC_IMPORT_RE = /(?:import|export)\s+(?:[^"'\r\n;]{1,256}?\s+from\s+)?["']([^"'\r\n]+)["']/g;
 const DYNAMIC_IMPORT_RE = /import\s*\(\s*["']([^"']+)["']\s*\)/g;
+const NEXT_FLIGHT_CHUNK_RE =
+  /(?<=^|[^\w\\/])\\?["']((?:(?:\/_next\/)?static\/chunks\/)[A-Za-z0-9_./@%+()-]+\.js)\\?["']/g;
 
 const IGNORED_HREF_PREFIXES = ['#', 'mailto:', 'tel:', 'javascript:', 'data:'] as const;
 const IGNORED_ROUTE_PATH_PREFIXES = ['/_next/', '/@vite/', '/node_modules/'] as const;
@@ -218,6 +220,45 @@ export function extractCandidateScripts(
     let resolved: URL;
     try {
       resolved = new URL(rawSrc, baseUrl);
+    } catch {
+      continue;
+    }
+
+    if (!isSameLocalOrigin(resolved, baseUrl)) {
+      continue;
+    }
+
+    const normalized = stripViteTimestampQuery(`${resolved.pathname}${resolved.search}`);
+    if (seen.has(normalized)) {
+      continue;
+    }
+
+    if (isExcludedFrameworkScript(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    candidates.push({
+      path: normalized,
+      priority: getScriptPriority(normalized),
+      index: idx++,
+    });
+  }
+
+  NEXT_FLIGHT_CHUNK_RE.lastIndex = 0;
+  while ((match = NEXT_FLIGHT_CHUNK_RE.exec(html)) !== null) {
+    const rawChunk = (match[1] ?? '').trim();
+    if (!rawChunk) {
+      continue;
+    }
+
+    const chunkPath = rawChunk.startsWith('/_next/')
+      ? rawChunk
+      : `/_next/${rawChunk}`;
+
+    let resolved: URL;
+    try {
+      resolved = new URL(chunkPath, baseUrl);
     } catch {
       continue;
     }
