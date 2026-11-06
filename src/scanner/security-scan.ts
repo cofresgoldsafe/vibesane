@@ -690,6 +690,10 @@ function parseViteErrorObject(raw: string): ViteErrorPayload | null {
   return null;
 }
 
+const OXC_FRAME_HEADER_LC_RE = /^\s*(?:╭─|\+-)\[\s*[^\]]+?:(\d+):(\d+)\s*\]\s*$/;
+const OXC_TRANSFORM_HEADER_RE = /^(?:x\s+)?Transform failed with \d+ errors?:$/i;
+const OXC_CAUSE_LINE_RE = /^\[[A-Z][A-Z0-9_]*\]\s+\S/;
+
 export function extractViteErrorInfo(
   raw: string,
   servedRoute?: string,
@@ -713,20 +717,42 @@ export function extractViteErrorInfo(
       extractSafeAppPath(idFile) ??
       cleanServedRoute;
 
-    const line = typeof payload.loc?.line === 'number' ? payload.loc.line : undefined;
-    const column = typeof payload.loc?.column === 'number' ? payload.loc.column : undefined;
-    const lineColSuffix =
-      line !== undefined ? `:${line}${column !== undefined ? `:${column}` : ''}` : '';
-    const safeLocation = safeFile ? `${safeFile}${lineColSuffix}` : '';
-
     const rawMsgLines = toAsciiSafe(
       payload.message.replace(ANSI_ESCAPE_RE, '').replace(/\r\n/g, '\n'),
     ).split('\n');
     const firstNonEmptyIdx = rawMsgLines.findIndex((line) => line.trim().length > 0);
     const firstLine = firstNonEmptyIdx !== -1 ? rawMsgLines[firstNonEmptyIdx]! : '';
 
+    let summaryLineIdx = firstNonEmptyIdx;
+    if (firstNonEmptyIdx !== -1 && OXC_TRANSFORM_HEADER_RE.test(firstLine.trim())) {
+      for (let i = firstNonEmptyIdx + 1; i < rawMsgLines.length; i++) {
+        if (OXC_CAUSE_LINE_RE.test(rawMsgLines[i]!.trim())) {
+          summaryLineIdx = i;
+          break;
+        }
+      }
+    }
+
+    let line = typeof payload.loc?.line === 'number' ? payload.loc.line : undefined;
+    let column = typeof payload.loc?.column === 'number' ? payload.loc.column : undefined;
+    if (line === undefined && summaryLineIdx !== -1) {
+      for (const afterLine of rawMsgLines.slice(summaryLineIdx + 1)) {
+        const match = OXC_FRAME_HEADER_LC_RE.exec(afterLine);
+        if (match) {
+          line = Number(match[1]);
+          column = Number(match[2]);
+          break;
+        }
+      }
+    }
+
+    const lineColSuffix =
+      line !== undefined ? `:${line}${column !== undefined ? `:${column}` : ''}` : '';
+    const safeLocation = safeFile ? `${safeFile}${lineColSuffix}` : '';
+
+    const summaryRawLine = summaryLineIdx !== -1 ? rawMsgLines[summaryLineIdx]! : '';
     let cleanMessage = toAsciiSafe(
-      sanitizeSecretsInText(scrubAbsolutePathsInText(firstLine)),
+      sanitizeSecretsInText(scrubAbsolutePathsInText(summaryRawLine)),
     )
       .replace(/\s+/g, ' ')
       .trim();
@@ -749,8 +775,8 @@ export function extractViteErrorInfo(
     let codeFrame: string | undefined;
     if (typeof payload.frame === 'string' && payload.frame.trim().length > 0) {
       codeFrame = formatCodeFrame(payload.frame);
-    } else if (firstNonEmptyIdx !== -1 && firstNonEmptyIdx + 1 < rawMsgLines.length) {
-      codeFrame = formatCodeFrame(rawMsgLines.slice(firstNonEmptyIdx + 1).join('\n'));
+    } else if (summaryLineIdx !== -1 && summaryLineIdx + 1 < rawMsgLines.length) {
+      codeFrame = formatCodeFrame(rawMsgLines.slice(summaryLineIdx + 1).join('\n'));
     }
 
     return {
@@ -768,10 +794,36 @@ export function extractViteErrorInfo(
     const strippedTags = withoutAnsi.replace(/<[^>]*>/g, '\n');
     const rawLines = strippedTags.split('\n');
 
+    const firstMsgIdx = rawLines.findIndex((line) => {
+      const t = line.trim();
+      return (
+        t.includes('Transform failed with') ||
+        t.includes('[plugin:vite:') ||
+        t.includes('Pre-transform error:')
+      );
+    });
+
+    let promotedCauseIdx = -1;
+    if (firstMsgIdx !== -1 && OXC_TRANSFORM_HEADER_RE.test(rawLines[firstMsgIdx]!.trim())) {
+      for (let i = firstMsgIdx + 1; i < rawLines.length; i++) {
+        if (OXC_CAUSE_LINE_RE.test(rawLines[i]!.trim())) {
+          promotedCauseIdx = i;
+          break;
+        }
+      }
+    }
+
+    const summaryLineIdx = promotedCauseIdx !== -1 ? promotedCauseIdx : firstMsgIdx;
+
     const frameLines: string[] = [];
     const messageLines: string[] = [];
 
-    for (const line of rawLines) {
+    if (promotedCauseIdx !== -1) {
+      messageLines.push(rawLines[promotedCauseIdx]!.trim());
+    }
+
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i]!;
       const trimmedLine = line.trim();
       if (!trimmedLine) {
         continue;
@@ -780,9 +832,16 @@ export function extractViteErrorInfo(
         /^(?:>\s*)?\d+\s*\|/.test(trimmedLine) ||
         /^\|\s*\^/.test(trimmedLine) ||
         /^\s*[+|]-/.test(line) ||
-        /^\s*\|/.test(line)
+        /^\s*\|/.test(line) ||
+        /^\s*-+\+\s*$/.test(line)
       ) {
-        frameLines.push(line);
+        if (promotedCauseIdx === -1 || i > promotedCauseIdx) {
+          frameLines.push(line);
+        }
+      } else if (promotedCauseIdx !== -1) {
+        if (i > promotedCauseIdx && OXC_CAUSE_LINE_RE.test(trimmedLine)) {
+          frameLines.push(line);
+        }
       } else if (
         trimmedLine.includes('Transform failed with') ||
         trimmedLine.includes('[plugin:vite:') ||
@@ -793,18 +852,36 @@ export function extractViteErrorInfo(
     }
 
     const baseMsg = messageLines.length > 0 ? messageLines.join(' ') : strippedTags;
-    const cleanMessage = toAsciiSafe(sanitizeSecretsInText(scrubAbsolutePathsInText(baseMsg)))
+    let cleanMessage = toAsciiSafe(sanitizeSecretsInText(scrubAbsolutePathsInText(baseMsg)))
       .replace(/\s+/g, ' ')
       .trim();
+
+    if (/^x\s+/.test(cleanMessage)) {
+      cleanMessage = cleanMessage.replace(/^x\s+/, '').trim();
+    }
 
     if (!cleanMessage) {
       return null;
     }
 
+    let lineColSuffix = '';
+    if (summaryLineIdx !== -1) {
+      for (const afterLine of rawLines.slice(summaryLineIdx + 1)) {
+        const match = OXC_FRAME_HEADER_LC_RE.exec(afterLine);
+        if (match) {
+          lineColSuffix = `:${Number(match[1])}:${Number(match[2])}`;
+          break;
+        }
+      }
+    }
+
     const safeFile = cleanServedRoute ?? extractSafeAppPath(cleanMessage);
+    const safeLocation = safeFile ? `${safeFile}${lineColSuffix}` : '';
     const summary =
-      safeFile && !cleanMessage.includes(safeFile)
-        ? `${safeFile} - ${cleanMessage}`
+      safeLocation &&
+      !cleanMessage.includes(safeLocation) &&
+      !cleanMessage.startsWith(safeFile ?? '')
+        ? `${safeLocation} - ${cleanMessage}`
         : cleanMessage;
     const codeFrame = frameLines.length > 0 ? formatCodeFrame(frameLines.join('\n')) : undefined;
 
