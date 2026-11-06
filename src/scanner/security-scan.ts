@@ -1,4 +1,25 @@
 import { toAsciiSafe } from '../text/ascii.js';
+import {
+  isIgnoredBundledModulePath,
+  isPlaceholderSecret,
+  isPublicEnvVarName,
+  isPublicStripeKey,
+} from '../rules/exceptions.js';
+import {
+  SECRET_RULES,
+  PEM_PRIVATE_KEY_RE,
+  EXTRA_TOKENS_RE,
+  INLINE_CONN_URI_RE,
+  ENV_SECRET_RE,
+  PASSWORD_FIELD_RE,
+  redactSecret,
+  redactPassword,
+  redactConnectionUri,
+  type SecretMatchContext,
+} from '../rules/secrets.js';
+import { MASKED_ERROR_RULES } from '../rules/masked-errors.js';
+
+export { redactSecret, redactPassword, redactConnectionUri };
 
 export type SanitySeverity = 'error' | 'warning';
 export type SanityIssueKind = 'http_error' | 'masked_error' | 'secret_leak' | 'slow_route';
@@ -14,63 +35,6 @@ export interface SanityIssue {
   elapsedMs?: number;
 }
 
-const KNOWN_SECRET_PREFIXES = [
-  'sk_live_',
-  'sk_test_',
-  'rk_live_',
-  'rk_test_',
-  'AIzaSy',
-  'ghp_',
-  'sk-proj-',
-  'sk-ant-',
-] as const;
-
-export function redactSecret(secret: string): string {
-  for (const prefix of KNOWN_SECRET_PREFIXES) {
-    if (secret.startsWith(prefix)) {
-      if (secret.length <= prefix.length + 4) {
-        return `${prefix}****`;
-      }
-      return `${prefix}****${secret.slice(-4)}`;
-    }
-  }
-
-  if (secret.length <= 8) {
-    return '****';
-  }
-
-  return `${secret.slice(0, 3)}****${secret.slice(-2)}`;
-}
-
-export function redactPassword(raw: string): string {
-  if (!raw || raw.length === 0) {
-    return '***';
-  }
-  return `${raw[0]}***`;
-}
-
-const CONN_URI_PARTS_RE =
-  /^((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^:\s"'`@]+:)([^@\s"'`]+)(@[^\s"'`]+)$/i;
-
-export function redactConnectionUri(uri: string): string {
-  if (!uri) {
-    return '****';
-  }
-  const trimmed = uri.trim();
-  const match = CONN_URI_PARTS_RE.exec(trimmed);
-  if (match) {
-    return `${match[1]}****${match[3]}`;
-  }
-  const replaced = trimmed.replace(
-    /((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^:\s"'`@]+:)([^@\s"'`]+)(@)/gi,
-    '$1****$3',
-  );
-  if (replaced !== trimmed) {
-    return replaced;
-  }
-  return redactSecret(trimmed);
-}
-
 export function stripViteTimestampQuery(pathOrUrl: string): string {
   if (!pathOrUrl) {
     return pathOrUrl;
@@ -80,104 +44,6 @@ export function stripViteTimestampQuery(pathOrUrl: string): string {
     .replace(/\?t=\d+(?=#|$)/g, '')
     .replace(/&t=\d+/g, '');
 }
-
-interface MaskedErrorRule {
-  label: string;
-  matches: (html: string) => boolean;
-}
-
-const NEXT_DATA_SCRIPT_RE = /<script\b[^>]*\bid=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/gi;
-const TITLE_500_RE = /<title\b[^>]*>\s*(?:500(?:\b|\s|:|-)|Internal Server Error\b)/i;
-const H1_500_RE = /<h1\b[^>]*>\s*(?:500(?:\b|\s|:|-)|Internal Server Error\b)/i;
-
-function hasNextDataError(html: string): boolean {
-  NEXT_DATA_SCRIPT_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let foundClosedTag = false;
-  while ((match = NEXT_DATA_SCRIPT_RE.exec(html)) !== null) {
-    foundClosedTag = true;
-    const body = match[1] ?? '';
-    if (
-      /"err"\s*:\s*\{\s*"name"\s*:/.test(body) ||
-      /"statusCode"\s*:\s*500\b/.test(body)
-    ) {
-      return true;
-    }
-  }
-
-  if (foundClosedTag) {
-    return false;
-  }
-
-  const nextDataIdx = html.indexOf('<script id="__NEXT_DATA__"');
-  if (nextDataIdx !== -1) {
-    const truncatedTail = html.slice(nextDataIdx);
-    if (
-      /"err"\s*:\s*\{\s*"name"\s*:/.test(truncatedTail) ||
-      /"statusCode"\s*:\s*500\b/.test(truncatedTail)
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function hasNextErrorContext(html: string): boolean {
-  if (/id=["']__next_error__["']/.test(html)) {
-    return true;
-  }
-  if (
-    html.includes('__next_error__') &&
-    (html.includes('Server Error') || html.includes('Unhandled Runtime Error'))
-  ) {
-    return true;
-  }
-  return false;
-}
-
-const MASKED_ERROR_RULES: readonly MaskedErrorRule[] = [
-  {
-    label: 'nextjs__container_errors',
-    matches: (html) => html.includes('nextjs__container_errors'),
-  },
-  {
-    label: 'Unhandled Runtime Error',
-    matches: (html) => html.includes('Unhandled Runtime Error'),
-  },
-  {
-    label: 'Application error: a client-side exception has occurred',
-    matches: (html) => html.includes('Application error: a client-side exception has occurred'),
-  },
-  {
-    label: '__next_error__',
-    matches: (html) => hasNextErrorContext(html),
-  },
-  {
-    label: '<nextjs-portal',
-    matches: (html) => html.includes('<nextjs-portal'),
-  },
-  {
-    label: '__NEXT_DATA__ error payload',
-    matches: (html) => hasNextDataError(html),
-  },
-  {
-    label: 'vite-error-overlay',
-    matches: (html) => html.includes('<vite-error-overlay') || html.includes('vite-error-overlay'),
-  },
-  {
-    label: '[plugin:vite:',
-    matches: (html) => html.includes('[plugin:vite:'),
-  },
-  {
-    label: 'Pre-transform error:',
-    matches: (html) => html.includes('Pre-transform error:'),
-  },
-  {
-    label: 'HTML 500 / Internal Server Error heading',
-    matches: (html) => TITLE_500_RE.test(html) || H1_500_RE.test(html),
-  },
-];
 
 export function detectMaskedError(html: string, route: string): SanityIssue[] {
   if (!html) {
@@ -207,96 +73,10 @@ export function detectMaskedError(html: string, route: string): SanityIssue[] {
   return [];
 }
 
-const STRIPE_SECRET_RE = /\b((?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{10,})\b/g;
-const GOOGLE_API_KEY_RE = /\b(AIzaSy[0-9A-Za-z_-]{33})\b/g;
-const PROVIDER_TOKEN_RE =
-  /\b(ghp_[0-9A-Za-z]{20,}|sk-proj-[0-9A-Za-z_-]{16,}|sk-ant-[0-9A-Za-z_-]{16,})\b/g;
-const ENV_SECRET_RE =
-  /\b([A-Z][A-Z0-9_]*(?:_SECRET|_PRIVATE_KEY))(?:\\?["'`])?\s*[:=]\s*\\?["'`]([^"'`\\\r\n]{6,})\\?["'`]/g;
-const DATABASE_URL_RE =
-  /\b(DATABASE_URL)(?:\\?["'`])?\s*[:=]\s*\\?["'`]((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^:\s"'`\\]+:[^@\s"'`\\]+@[^"'`\\\s]+)\\?["'`]/g;
-const PASSWORD_FIELD_RE =
-  /(?:\\?["'](password|passwd|pwd|senha)\\?["']|\b(password|passwd|pwd|senha))\s*:\s*\\?["']([^"'\\\r\n]{4,})\\?["']/gi;
-
-const PLACEHOLDER_VALUES = new Set([
-  '***',
-  '****',
-  '<secret>',
-  '<password>',
-  'your-secret',
-  'your_secret',
-  'your-password',
-  'your_password',
-  'changeme',
-  'password',
-  'passwd',
-  'pwd',
-  'senha',
-  'example',
-  'placeholder',
-  '••••••••',
-  'process.env',
-]);
-
-function isPlaceholderSecret(value: string): boolean {
-  const trimmed = value.trim();
-  const normalized = trimmed.toLowerCase();
-  if (!trimmed) {
-    return true;
-  }
-  if (PLACEHOLDER_VALUES.has(normalized)) {
-    return true;
-  }
-  if (/^[*•xX._-]+$/.test(trimmed) || /^[^*]\*{3}$/.test(trimmed)) {
-    return true;
-  }
-  if (/^<[^>]+>$/.test(trimmed) || /^\$\{[^}]+\}$/.test(trimmed)) {
-    return true;
-  }
-  if (normalized.startsWith('process.env.') || normalized.startsWith('import.meta.env.')) {
-    return true;
-  }
-  if (normalized.includes('your-') || normalized.includes('your_') || normalized.includes('changeme')) {
-    return true;
-  }
-  return false;
-}
-
-function startsWithKnownTokenPrefix(value: string): boolean {
-  return KNOWN_SECRET_PREFIXES.some((prefix) => value.startsWith(prefix));
-}
-
-function isPublicStripeKey(value: string): boolean {
-  return value.startsWith('pk_live_') || value.startsWith('pk_test_');
-}
-
-function isHtmlAttributeContext(content: string, matchIndex: number): boolean {
-  const lookbehindStart = Math.max(0, matchIndex - 120);
-  const before = content.slice(lookbehindStart, matchIndex);
-  const lastOpenTag = before.lastIndexOf('<');
-  const lastCloseTag = before.lastIndexOf('>');
-  if (lastOpenTag !== -1 && lastOpenTag > lastCloseTag) {
-    return true;
-  }
-  if (/(?:type|name|id|for|placeholder|autocomplete)\s*=\s*["']?$/i.test(before)) {
-    return true;
-  }
-  return false;
-}
-
 const TURBOPACK_MODULE_MARKER_RE =
   /\[project\]\/([A-Za-z0-9_./[\]-]+\.[A-Za-z0-9]+)(?:\s+\[[^\]]+\])?(?:\s+\((?:ecmascript|hmr-entry)\))?/g;
 const WEBPACK_MODULE_MARKER_RE =
   /(?:\([A-Za-z0-9_-]+\)\/)?\.\.?\/((?:src|app|pages|components)\/[A-Za-z0-9_./[\]-]+\.[A-Za-z0-9]+)/g;
-
-function isIgnoredBundledModulePath(candidatePath: string): boolean {
-  const lower = candidatePath.toLowerCase();
-  return (
-    lower.includes('node_modules') ||
-    lower.includes('next/dist') ||
-    lower.includes('next_dist')
-  );
-}
 
 export function resolveBundledSourceFile(content: string, matchIndex: number): string | null {
   if (!content || matchIndex <= 0) {
@@ -370,105 +150,32 @@ export function scanSecrets(content: string, route: string): SanityIssue[] {
     });
   };
 
-  let match: RegExpExecArray | null;
-
-  STRIPE_SECRET_RE.lastIndex = 0;
-  while ((match = STRIPE_SECRET_RE.exec(content)) !== null) {
-    const token = match[1];
-    if (token) {
-      pushIssue('Stripe secret key', token, undefined, match.index);
+  for (const rule of SECRET_RULES) {
+    rule.regex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = rule.regex.exec(content)) !== null) {
+      const extracted = rule.extract
+        ? rule.extract(match)
+        : { value: match[1] ?? '' };
+      const rawSecret = extracted.value;
+      const ctx: SecretMatchContext = {
+        match,
+        content,
+        matchIndex: match.index,
+        ...(extracted.key !== undefined ? { key: extracted.key } : {}),
+      };
+      if (!rule.accept(rawSecret, ctx)) {
+        continue;
+      }
+      const resolvedLabel =
+        typeof rule.label === 'function' ? rule.label(match) : rule.label;
+      const customMasked = rule.mask ? rule.mask(rawSecret) : undefined;
+      pushIssue(resolvedLabel, rawSecret, customMasked, match.index);
     }
-  }
-
-  GOOGLE_API_KEY_RE.lastIndex = 0;
-  while ((match = GOOGLE_API_KEY_RE.exec(content)) !== null) {
-    const token = match[1];
-    if (token) {
-      pushIssue('Google API key', token, undefined, match.index);
-    }
-  }
-
-  PROVIDER_TOKEN_RE.lastIndex = 0;
-  while ((match = PROVIDER_TOKEN_RE.exec(content)) !== null) {
-    const token = match[1];
-    if (!token) {
-      continue;
-    }
-    const label = token.startsWith('ghp_')
-      ? 'GitHub token'
-      : token.startsWith('sk-proj-')
-        ? 'OpenAI API key'
-        : 'Anthropic API key';
-    pushIssue(label, token, undefined, match.index);
-  }
-
-  ENV_SECRET_RE.lastIndex = 0;
-  while ((match = ENV_SECRET_RE.exec(content)) !== null) {
-    const varName = match[1];
-    const secretValue = match[2];
-    if (!varName || !secretValue) {
-      continue;
-    }
-    if (varName.startsWith('NEXT_PUBLIC_') || varName.startsWith('VITE_')) {
-      continue;
-    }
-    if (
-      isPlaceholderSecret(secretValue) ||
-      isPublicStripeKey(secretValue) ||
-      startsWithKnownTokenPrefix(secretValue)
-    ) {
-      continue;
-    }
-    pushIssue(varName, secretValue, undefined, match.index);
-  }
-
-  DATABASE_URL_RE.lastIndex = 0;
-  while ((match = DATABASE_URL_RE.exec(content)) !== null) {
-    const varName = match[1];
-    const connString = match[2];
-    if (!varName || !connString) {
-      continue;
-    }
-    if (isPlaceholderSecret(connString)) {
-      continue;
-    }
-    pushIssue(varName, connString, redactConnectionUri(connString), match.index);
-  }
-
-  PASSWORD_FIELD_RE.lastIndex = 0;
-  while ((match = PASSWORD_FIELD_RE.exec(content)) !== null) {
-    const fieldName = match[1] ?? match[2] ?? 'password';
-    const passwordValue = match[3];
-    if (!passwordValue || /\s/.test(passwordValue)) {
-      continue;
-    }
-    if (isHtmlAttributeContext(content, match.index)) {
-      continue;
-    }
-    if (
-      isPlaceholderSecret(passwordValue) ||
-      isPublicStripeKey(passwordValue) ||
-      startsWithKnownTokenPrefix(passwordValue)
-    ) {
-      continue;
-    }
-    pushIssue(
-      `Hardcoded ${fieldName.toLowerCase()}`,
-      passwordValue,
-      redactPassword(passwordValue),
-      match.index,
-    );
   }
 
   return issues;
 }
-
-const PEM_PRIVATE_KEY_RE =
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g;
-const INLINE_CONN_URI_RE =
-  /\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^:\s"'`\\]+:[^@\s"'`\\]+@[^"'`\\\s]+)/g;
-const EXTRA_TOKENS_RE =
-  /\b(AKIA[0-9A-Z]{16}|glpat-[0-9A-Za-z_-]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|eyJ[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,})\b/g;
 
 export function sanitizeSecretsInText(raw: string): string {
   if (!raw) {
@@ -476,17 +183,20 @@ export function sanitizeSecretsInText(raw: string): string {
   }
 
   let sanitized = raw.replace(PEM_PRIVATE_KEY_RE, '[REDACTED PRIVATE KEY]');
-  sanitized = sanitized.replace(STRIPE_SECRET_RE, (m) => redactSecret(m));
-  sanitized = sanitized.replace(GOOGLE_API_KEY_RE, (m) => redactSecret(m));
-  sanitized = sanitized.replace(PROVIDER_TOKEN_RE, (m) => redactSecret(m));
+  for (const rule of SECRET_RULES) {
+    if (rule.kind === 'token') {
+      sanitized = sanitized.replace(rule.regex, (m) =>
+        rule.mask ? rule.mask(m) : redactSecret(m),
+      );
+    }
+  }
   sanitized = sanitized.replace(EXTRA_TOKENS_RE, (m) => redactSecret(m));
   sanitized = sanitized.replace(INLINE_CONN_URI_RE, (m) => redactConnectionUri(m));
   sanitized = sanitized.replace(
     ENV_SECRET_RE,
     (full, varName: string, secretValue: string) => {
       if (
-        varName.startsWith('NEXT_PUBLIC_') ||
-        varName.startsWith('VITE_') ||
+        isPublicEnvVarName(varName) ||
         isPlaceholderSecret(secretValue) ||
         isPublicStripeKey(secretValue)
       ) {

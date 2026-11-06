@@ -1,9 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-06)
-- **Branch:** `fix/vite8-oxc-error-summary`
-- **Última tarefa concluída:** Ajustes `v0.1.1` (`npm pkg fix` normalizando `bin.vibesane` para `"bin/vibesane.js"`, extração `:line:col` do cabeçalho da moldura Oxc e promoção da 1ª causa `[CÓDIGO] mensagem` em `extractViteErrorInfo` nos caminhos JSON e texto puro) + publicação das notas da Release `v0.1.0` no GitHub
-- **Próxima tarefa:** Conferência Red Team, abertura/merge do PR para `main`, `npm version patch` e `npm publish` manual pelo mantenedor
+- **Versão atual publicada:** `v0.1.1` (npm + GitHub Releases `v0.1.0` e `v0.1.1`)
+- **Branch:** `refactor/task-6-rules`
+- **Última tarefa concluída:** **Task 6 (Separação das Regras do Motor em `src/rules/`)** — Regras declarativas isoladas em `src/rules/exceptions.ts`, `src/rules/secrets.ts` e `src/rules/masked-errors.ts`, `KNOWN_SECRET_PREFIXES` derivado de fonte única, exemplos embutidos auto-validados em `test/rules.test.mjs` (`83/83` testes passando, zero linhas alteradas nos 74 testes existentes e em `src/index.ts`) e paridade de saída comprovada contra `vibesane@0.1.1`
+- **Próxima tarefa:** Aprovação do Alexandre para commit, push e abertura de PR da `refactor/task-6-rules` para a `main`
 
 ---
 
@@ -28,6 +29,22 @@
   - Next 16: `extractNextErrorInfo` desescapa payloads RSC/Flight, ignora `__next_builtin__*` e prioriza `"type":"page"` (`broken/page.tsx - TypeError: ...`).
   - Resolução de módulo-fonte em chunks (`resolveBundledSourceFile`): mapeia segredos vazados em chunks compilados para o arquivo-fonte original a partir do último marcador antes da chave (Turbopack `[project]/src/...` e Webpack `(app-pages-browser)/./src/...`).
   - Detecção em Webpack `eval("...")` e Mascaramentos Específicos: `ENV_SECRET_RE`, `DATABASE_URL_RE` e `PASSWORD_FIELD_RE` aceitam aspas escapadas `\\?["']` e excluem `\`; `redactPassword` mascara senhas como `G***` (e `***` para vazia); `redactConnectionUri` mascara apenas a senha da URI (`postgres://user:****@host/db`).
+- **Separação Declarativa Regras vs. Motor (`src/rules/` vs. `src/scanner/security-scan.ts`):**
+  - `src/rules/exceptions.ts`: centraliza `PLACEHOLDER_VALUES`, `PUBLIC_STRIPE_PREFIXES` (`pk_live_`, `pk_test_`), `PUBLIC_ENV_PREFIXES` (`NEXT_PUBLIC_`, `VITE_`), `IGNORED_BUNDLED_MODULE_SUBSTRINGS` (`node_modules`, `next/dist`, `next_dist`) e os predicados `isPlaceholderSecret`, `isPublicStripeKey`, `isPublicEnvVarName`, `isHtmlAttributeContext` e `isIgnoredBundledModulePath`.
+  - `src/rules/secrets.ts`: centraliza `SECRET_RULES` (cada regra com `id`, `kind: 'token' | 'assignment'`, `label`, `regex`, `tokenPrefixes?`, `extract?`, função explícita `accept(value, ctx)`, `mask?` e `examples: { shouldDetect, shouldIgnore }`), deriva `KNOWN_SECRET_PREFIXES` automaticamente de `SECRET_RULES.flatMap((r) => r.tokenPrefixes ?? [])`, e exporta `redactSecret`, `redactPassword`, `redactConnectionUri` e as regexes de sanitização de texto. Em `sanitizeSecretsInText`, apenas as regras `kind: 'token'` são percorridas na posição original (entre `PEM_PRIVATE_KEY_RE` e `EXTRA_TOKENS_RE`), preservando a ordem fixa e as condições exatas de `ENV_SECRET_RE` e `PASSWORD_FIELD_RE`.
+  - `src/rules/masked-errors.ts`: centraliza `MASKED_ERROR_RULES` (10 regras com `id`, `label`, `matches` e `examples: { shouldDetect, shouldIgnore }`) e os detectores `hasNextDataError` e `hasNextErrorContext`.
+
+---
+
+## Como Adicionar uma Regra (`src/rules/`)
+
+1. **Nova regra de segredo (`src/rules/secrets.ts`):**
+   - Adicione um objeto em `SECRET_RULES` com `id` único, `kind` (`'token'` para tokens com prefixo fixo que também devem ser mascarados automaticamente em `codeFrame`/snippets e adicionados a `KNOWN_SECRET_PREFIXES`, ou `'assignment'` para pares chave/valor), `label`, `regex` (com flag `/g`), `tokenPrefixes` (se `kind: 'token'`), `accept` (ex.: `acceptTokenSecret`) e `examples: { shouldDetect: [...], shouldIgnore: [...] }`.
+   - Monte chaves falsas nos exemplos usando `.join('')` / `.join('_')` para não acionar bloqueadores de segredos do GitHub.
+2. **Nova regra de erro mascarado (`src/rules/masked-errors.ts`):**
+   - Adicione um objeto em `MASKED_ERROR_RULES` com `id` único, `label`, `matches: (html) => ...` e `examples: { shouldDetect: [...], shouldIgnore: [...] }` (garantindo que o HTML de `shouldDetect` teste especificamente a nova regra sem disparar uma regra anterior da lista).
+3. **Validação automática:**
+   - Execute `npm test` — `test/rules.test.mjs` valida automaticamente a unicidade de `id`, a derivação de `KNOWN_SECRET_PREFIXES` e todos os exemplos `shouldDetect` e `shouldIgnore` sem precisar alterar `src/scanner/security-scan.ts`.
 
 ---
 
@@ -37,3 +54,5 @@
 - `2026-11-06` — **Task 3 (Motor de Testes de Sanidade):** Concluída e verificada ao vivo com os 5 ajustes do Red Team (`62/62` testes passando em `node:test`, zero alterações nos 45 testes das Tasks 1 e 2, `npm run typecheck` limpo).
 - `2026-11-06` — **Task 4 (Gerador de Prompt para IA & Terminal UI):** Concluída e verificada ao vivo (`70/70` testes passando em `node:test` cobrindo `terminal-ui`, `ai-prompt-gen`, extração estruturada Vite/Next 16, resolução de módulo-fonte em chunks Turbopack/Webpack, mascaramento `G***` e URI de banco; `npm run typecheck` limpo).
 - `2026-11-06` — **Task 5 (README de Classe Mundial, ASCII Safety & Preparação de Publicação):** Concluída e verificada ao vivo (`73/73` testes passando em `node:test`, fixture real do Vite 8 em `test/fixtures/vite8-oxc-syntax-error.js`, validação de clipboard em `CP850` no `cmd.exe` e Windows PowerShell 5.1 com `| clip` e `| Set-Clipboard`, `npm pack --dry-run --json` com `24,7 KB` sem `src/` e sem `test/`), com normalização ASCII (`src/text/ascii.ts`), `README.md` enxuto com exemplos reais e notas de cold start/limitações, metadados de publicação no `package.json` (`prepack` e remoção de build duplicado no `test`), `SPEC.md` e `GEMINI.md` atualizados.
+- `2026-11-06` — **Release `v0.1.1` (Melhorias de Resumo Oxc Vite 8, `npm pkg fix` e Publicação):** Concluída e publicada no npm e GitHub (`74/74` testes passando em `node:test`, PRs `#4` e `#5` mergeados na `main` com CI 100% verde, `bin.vibesane` normalizado para `"bin/vibesane.js"`, extração de `:line:col` da moldura Oxc + promoção da 1ª causa `[CÓDIGO] mensagem` em `src/scanner/security-scan.ts`, versão lida dinamicamente de `package.json` em `test/cli.test.mjs`, e notas das Releases `v0.1.0` e `v0.1.1` publicadas no GitHub).
+- `2026-11-06` — **Task 6 (Separar as Regras do Motor — Refatoração sem Mudança de Comportamento):** Concluída e verificada ao vivo (`83/83` testes passando em `node:test`, sendo os 74 existentes sem nenhuma linha alterada + 9 novos em `test/rules.test.mjs`; `src/index.ts` intocado; regras movidas para `src/rules/exceptions.ts`, `src/rules/secrets.ts` e `src/rules/masked-errors.ts`; `KNOWN_SECRET_PREFIXES` derivado de `SECRET_RULES`; equivalência comprovada com diff zero contra `npx vibesane@0.1.1` em projetos reais Next 16 Turbopack/`--webpack` e Vite 8; demonstração `sbp_` validada sem tocar no motor).
