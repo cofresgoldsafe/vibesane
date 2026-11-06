@@ -277,7 +277,7 @@ function scrubAbsolutePathsInText(text: string): string {
     return '';
   }
   return text.replace(
-    /(?:[A-Za-z]:[\\/]|\/(?:Users|home|var|tmp|opt|private|mnt|root|etc|Volumes)[\\/])[^\s:"'`<>()]+/gi,
+    /(?:(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/]|\/(?:Users|home|var|tmp|opt|private|mnt|root|etc|Volumes)[\\/])[^\s:"'`<>()]+/gi,
     (match) => {
       const safe = extractSafeAppPath(match);
       if (safe) {
@@ -331,8 +331,8 @@ function formatCodeFrame(rawFrame?: string): string | undefined {
     return undefined;
   }
   const cleaned = toAsciiSafe(
-    sanitizeSecretsInText(
-      scrubAbsolutePathsInText(toAsciiSafe(rawFrame.replace(ANSI_ESCAPE_RE, ''))),
+    scrubAbsolutePathsInText(
+      sanitizeSecretsInText(toAsciiSafe(rawFrame.replace(ANSI_ESCAPE_RE, ''))),
     ),
   );
   const lines = cleaned.split('\n');
@@ -462,7 +462,7 @@ export function extractViteErrorInfo(
 
     const summaryRawLine = summaryLineIdx !== -1 ? rawMsgLines[summaryLineIdx]! : '';
     let cleanMessage = toAsciiSafe(
-      sanitizeSecretsInText(scrubAbsolutePathsInText(summaryRawLine)),
+      scrubAbsolutePathsInText(sanitizeSecretsInText(summaryRawLine)),
     )
       .replace(/\s+/g, ' ')
       .trim();
@@ -562,7 +562,7 @@ export function extractViteErrorInfo(
     }
 
     const baseMsg = messageLines.length > 0 ? messageLines.join(' ') : strippedTags;
-    let cleanMessage = toAsciiSafe(sanitizeSecretsInText(scrubAbsolutePathsInText(baseMsg)))
+    let cleanMessage = toAsciiSafe(scrubAbsolutePathsInText(sanitizeSecretsInText(baseMsg)))
       .replace(/\s+/g, ' ')
       .trim();
 
@@ -731,7 +731,7 @@ export function extractNextErrorInfo(
       }
 
       const cleanMsg = toAsciiSafe(
-        sanitizeSecretsInText(scrubAbsolutePathsInText(errMsg))
+        scrubAbsolutePathsInText(sanitizeSecretsInText(errMsg))
           .replace(/\s+/g, ' ')
           .trim(),
       );

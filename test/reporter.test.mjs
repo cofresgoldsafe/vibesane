@@ -884,3 +884,182 @@ describe('AI Fix Formatter & Terminal UI Reporter (BDD)', () => {
     assert.ok(multiPlain.codeFrame.includes('[PARSE_ERROR] Second error'));
   });
 });
+
+describe('v0.1.2 - Mascaramento de URIs de banco no codeFrame e mensagens de erro (Vite/Oxc & Next)', () => {
+  it('11. Oxc/Vite (JSON e fallback texto puro): mascara senhas em postgres://, postgresql://, mysql:// e mongodb+srv:// mantendo o esquema intacto no summary, codeFrame e prompt', () => {
+    const pgPass = ['pg', 'Secret', 'Pass', '111'].join('');
+    const pgsqlPass = ['pgsql', 'Secret', 'Pass', '222'].join('');
+    const mysqlPass = ['mysql', 'Secret', 'Pass', '333'].join('');
+    const mongoPass = ['mongo', 'Secret', 'Pass', '444'].join('');
+
+    const rawOxcMessage = [
+      'Transform failed with 1 error:',
+      '',
+      `[PARSE_ERROR] Connection failed for "postgres://admin:${pgPass}@db:5432/p" and "postgresql://u:${pgsqlPass}@h:5432/d"`,
+      '   ╭─[ src/db.ts:4:15 ]',
+      '   │',
+      ` 2 │   const pg = "postgres://admin:${pgPass}@db:5432/p";`,
+      ` 3 │   const pgsql = "postgresql://u:${pgsqlPass}@h:5432/d";`,
+      ` 4 │   const my = "mysql://root:${mysqlPass}@db:3306/app" broken`,
+      ` 5 │   const mg = "mongodb+srv://u:${mongoPass}@c.x.net/db";`,
+      '───╯',
+    ].join('\n');
+
+    const jsonPayload = `const error = ${JSON.stringify({
+      message: rawOxcMessage,
+      id: 'C:/Users/alex/proj/src/db.ts',
+      frame: '',
+      plugin: 'vite:oxc',
+    })};`;
+
+    const fromJson = extractViteErrorInfo(jsonPayload, '/src/db.ts');
+    const fromPlain = extractViteErrorInfo(rawOxcMessage, '/src/db.ts');
+
+    for (const [label, info] of [
+      ['JSON', fromJson],
+      ['Plain', fromPlain],
+    ]) {
+      assert.ok(info, `${label}: info deve existir`);
+      assert.ok(info.codeFrame, `${label}: codeFrame deve existir`);
+
+      // Esquemas intactos e senhas mascaradas no summary
+      assert.ok(
+        info.summary.includes('postgres://admin:****@db:5432/p'),
+        `${label} summary deve conter postgres://admin:****@db:5432/p:\n${info.summary}`,
+      );
+      assert.ok(
+        info.summary.includes('postgresql://u:****@h:5432/d'),
+        `${label} summary deve conter postgresql://u:****@h:5432/d:\n${info.summary}`,
+      );
+
+      // Esquemas intactos e senhas mascaradas no codeFrame
+      assert.ok(
+        info.codeFrame.includes('"postgres://admin:****@db:5432/p"'),
+        `${label} codeFrame deve conter "postgres://admin:****@db:5432/p":\n${info.codeFrame}`,
+      );
+      assert.ok(
+        info.codeFrame.includes('"postgresql://u:****@h:5432/d"'),
+        `${label} codeFrame deve conter "postgresql://u:****@h:5432/d":\n${info.codeFrame}`,
+      );
+      assert.ok(
+        info.codeFrame.includes('"mysql://root:****@db:3306/app"'),
+        `${label} codeFrame deve conter "mysql://root:****@db:3306/app":\n${info.codeFrame}`,
+      );
+      assert.ok(
+        info.codeFrame.includes('"mongodb+srv://u:****@c.x.net/db"'),
+        `${label} codeFrame deve conter "mongodb+srv://u:****@c.x.net/db":\n${info.codeFrame}`,
+      );
+
+      // Senhas originais nunca aparecem
+      for (const secret of [pgPass, pgsqlPass, mysqlPass, mongoPass]) {
+        assert.equal(info.summary.includes(secret), false, `${label} summary vazou ${secret}`);
+        assert.equal(info.codeFrame.includes(secret), false, `${label} codeFrame vazou ${secret}`);
+      }
+
+      const prompt = generateAiFixPrompt({
+        ok: false,
+        port: 5173,
+        url: 'http://localhost:5173',
+        issues: [
+          {
+            kind: 'http_error',
+            severity: 'error',
+            route: '/src/db.ts',
+            detail: `HTTP 500 on script ${info.summary}`,
+            codeFrame: info.codeFrame,
+          },
+        ],
+      });
+      assert.ok(prompt);
+      assert.ok(prompt.includes('"postgres://admin:****@db:5432/p"'));
+      assert.ok(prompt.includes('"postgresql://u:****@h:5432/d"'));
+      assert.ok(prompt.includes('"mysql://root:****@db:3306/app"'));
+      assert.ok(prompt.includes('"mongodb+srv://u:****@c.x.net/db"'));
+      for (const secret of [pgPass, pgsqlPass, mysqlPass, mongoPass]) {
+        assert.equal(prompt.includes(secret), false, `${label} prompt vazou ${secret}`);
+      }
+    }
+  });
+
+  it('12. Next (extractNextErrorInfo): mascara senhas em postgres://, postgresql://, mysql:// e mongodb+srv:// mantendo o esquema intacto', () => {
+    const pgPass = ['pg', 'Next', 'Pass', '111'].join('');
+    const pgsqlPass = ['pgsql', 'Next', 'Pass', '222'].join('');
+    const mysqlPass = ['mysql', 'Next', 'Pass', '333'].join('');
+    const mongoPass = ['mongo', 'Next', 'Pass', '444'].join('');
+
+    const nextHtml = `
+      <script>
+        self.__next_f.push([1,"1:{\\"type\\":\\"page\\",\\"pagePath\\":\\"src/app/db/page.tsx\\"}\\n"]);
+        self.__next_f.push([1,"2:{\\"name\\":\\"Error\\",\\"message\\":\\"DB errors: postgres://admin:${pgPass}@db:5432/p | postgresql://u:${pgsqlPass}@h:5432/d | mysql://root:${mysqlPass}@db:3306/app | mongodb+srv://u:${mongoPass}@c.x.net/db\\"}\\n"]);
+      </script>
+    `;
+
+    const extracted = extractNextErrorInfo(nextHtml, '/db');
+    assert.ok(extracted);
+    assert.ok(extracted.summary.includes('postgres://admin:****@db:5432/p'));
+    assert.ok(extracted.summary.includes('postgresql://u:****@h:5432/d'));
+    assert.ok(extracted.summary.includes('mysql://root:****@db:3306/app'));
+    assert.ok(extracted.summary.includes('mongodb+srv://u:****@c.x.net/db'));
+
+    for (const secret of [pgPass, pgsqlPass, mysqlPass, mongoPass]) {
+      assert.equal(extracted.summary.includes(secret), false);
+    }
+  });
+
+  it('13. Regressão: caminhos absolutos Windows (C:\\Users\\alex\\proj\\src\\db.ts, D:/work/app/src/index.ts) e Unix (/Users/alex/proj/src/db.ts) + chave Stripe sk_live_ e acentos UTF-8 ("Olá") no codeFrame', () => {
+    const fakeStripeKey = ['sk', 'live', '99887766554433221100zyxw'].join('_');
+    const expectedMaskedStripe = ['sk', 'live', '****zyxw'].join('_');
+    const dbPass = ['my', 'Top', 'Secret', '99'].join('');
+
+    const frameWithPathsAndSecrets = [
+      '   ╭─[ C:\\Users\\alex\\proj\\src\\db.ts:3:10 ]',
+      '   │',
+      ' 1 │ // Imported from D:/work/app/src/index.ts and /Users/alex/proj/src/db.ts',
+      ` 2 │ const stripe = "${fakeStripeKey}";`,
+      ` 3 │ const db = "postgres://admin:${dbPass}@db:5432/p";`,
+      ' 4 │ const greeting = "Olá";',
+      '───╯',
+    ].join('\n');
+
+    const payload = {
+      message:
+        'Transform failed in C:\\Users\\alex\\proj\\src\\db.ts (imported by D:/work/app/src/index.ts and /Users/alex/proj/src/db.ts)',
+      id: 'C:\\Users\\alex\\proj\\src\\db.ts',
+      frame: frameWithPathsAndSecrets,
+      loc: {
+        file: 'C:\\Users\\alex\\proj\\src\\db.ts',
+        line: 3,
+        column: 10,
+      },
+    };
+
+    const info = extractViteErrorInfo(`const error = ${JSON.stringify(payload)};`, '/src/db.ts');
+    assert.ok(info);
+    assert.ok(info.codeFrame);
+
+    // Caminhos absolutos limpos na mensagem e no frame
+    for (const forbidden of ['C:\\Users\\alex', 'C:/Users/alex', 'D:/work/app', '/Users/alex']) {
+      assert.equal(
+        info.summary.includes(forbidden),
+        false,
+        `summary não deve conter ${forbidden}: ${info.summary}`,
+      );
+      assert.equal(
+        info.codeFrame.includes(forbidden),
+        false,
+        `codeFrame não deve conter ${forbidden}:\n${info.codeFrame}`,
+      );
+    }
+    assert.ok(info.summary.includes('/src/db.ts'));
+    assert.ok(info.summary.includes('/src/index.ts'));
+    assert.ok(info.codeFrame.includes('/src/db.ts:3:10'));
+    assert.ok(info.codeFrame.includes('/src/index.ts'));
+
+    // Chave Stripe mascarada, URI de banco mascarada com esquema intacto e acento UTF-8 "Olá" preservado
+    assert.ok(info.codeFrame.includes(expectedMaskedStripe));
+    assert.equal(info.codeFrame.includes('99887766554433221100'), false);
+    assert.ok(info.codeFrame.includes('"postgres://admin:****@db:5432/p"'));
+    assert.equal(info.codeFrame.includes(dbPass), false);
+    assert.ok(info.codeFrame.includes('const greeting = "Olá";'));
+  });
+});

@@ -2,9 +2,9 @@
 
 ## Status do Plano Ativo (2026-11-06)
 - **Versão atual publicada:** `v0.1.1` (npm + GitHub Releases `v0.1.0` e `v0.1.1`)
-- **Branch:** `refactor/task-6-rules`
-- **Última tarefa concluída:** **Task 6 (Separação das Regras do Motor em `src/rules/`)** — Regras declarativas isoladas em `src/rules/exceptions.ts`, `src/rules/secrets.ts` e `src/rules/masked-errors.ts`, `KNOWN_SECRET_PREFIXES` derivado de fonte única, exemplos embutidos auto-validados em `test/rules.test.mjs` (`83/83` testes passando, zero linhas alteradas nos 74 testes existentes e em `src/index.ts`) e paridade de saída comprovada contra `vibesane@0.1.1`
-- **Próxima tarefa:** Aprovação do Alexandre para commit, push e abertura de PR da `refactor/task-6-rules` para a `main`
+- **Branch:** `fix/codeframe-db-uri-leak`
+- **Última tarefa concluída:** **Fix v0.1.2 (Prevenção de Vazamento de Senhas de URIs de Banco em `codeFrame` e Mensagens de Erro)** — Inversão da ordem de sanitização em 4 pontos (`scrubAbsolutePathsInText(sanitizeSecretsInText(...))`), adição de lookbehind negativo `(?<![A-Za-z0-9+.-])` na regex de unidade de disco Windows evitando falsa captura de esquemas URI (`s:/`), testes 11, 12 e 13 em `test/reporter.test.mjs` (`86/86` testes passando) e preservação estrita de acentos UTF-8 e caminhos limpos.
+- **Próxima tarefa:** Commit na branch `fix/codeframe-db-uri-leak`, push e abertura do PR para a `main`.
 
 ---
 
@@ -56,3 +56,11 @@
 - `2026-11-06` — **Task 5 (README de Classe Mundial, ASCII Safety & Preparação de Publicação):** Concluída e verificada ao vivo (`73/73` testes passando em `node:test`, fixture real do Vite 8 em `test/fixtures/vite8-oxc-syntax-error.js`, validação de clipboard em `CP850` no `cmd.exe` e Windows PowerShell 5.1 com `| clip` e `| Set-Clipboard`, `npm pack --dry-run --json` com `24,7 KB` sem `src/` e sem `test/`), com normalização ASCII (`src/text/ascii.ts`), `README.md` enxuto com exemplos reais e notas de cold start/limitações, metadados de publicação no `package.json` (`prepack` e remoção de build duplicado no `test`), `SPEC.md` e `GEMINI.md` atualizados.
 - `2026-11-06` — **Release `v0.1.1` (Melhorias de Resumo Oxc Vite 8, `npm pkg fix` e Publicação):** Concluída e publicada no npm e GitHub (`74/74` testes passando em `node:test`, PRs `#4` e `#5` mergeados na `main` com CI 100% verde, `bin.vibesane` normalizado para `"bin/vibesane.js"`, extração de `:line:col` da moldura Oxc + promoção da 1ª causa `[CÓDIGO] mensagem` em `src/scanner/security-scan.ts`, versão lida dinamicamente de `package.json` em `test/cli.test.mjs`, e notas das Releases `v0.1.0` e `v0.1.1` publicadas no GitHub).
 - `2026-11-06` — **Task 6 (Separar as Regras do Motor — Refatoração sem Mudança de Comportamento):** Concluída e verificada ao vivo (`83/83` testes passando em `node:test`, sendo os 74 existentes sem nenhuma linha alterada + 9 novos em `test/rules.test.mjs`; `src/index.ts` intocado; regras movidas para `src/rules/exceptions.ts`, `src/rules/secrets.ts` e `src/rules/masked-errors.ts`; `KNOWN_SECRET_PREFIXES` derivado de `SECRET_RULES`; equivalência comprovada com diff zero contra `npx vibesane@0.1.1` em projetos reais Next 16 Turbopack/`--webpack` e Vite 8; demonstração `sbp_` validada sem tocar no motor).
+- `2026-11-06` — **Fix v0.1.2 (`fix/codeframe-db-uri-leak` — Mascaramento de URIs de Banco antes de Scrubbing de Caminhos):**
+  - **Causa do bug:** (1) A regex de caminhos absolutos do Windows casava letras de esquema de rede terminadas em dois pontos e barra (`postgres://` capturado como drive `s:/`), truncando ou corrompendo a URI antes do mascaramento; (2) A ordem de execução chamava `sanitizeSecretsInText(scrubAbsolutePathsInText(...))`, fazendo o scrubbing de caminhos rodar antes da sanitização de segredos e expondo credenciais em molduras de código e resumos de erro.
+  - **Lookbehind na regex de drive Windows:** Inclusão de `(?<![A-Za-z0-9+.-])` antes de `[A-Za-z]:[\\/]` em `scrubAbsolutePathsInText` (`src/scanner/security-scan.ts`), garantindo que esquemas URI RFC 3986 não sejam interpretados como unidades de disco Windows.
+  - **Os 4 pontos invertidos:** Ordem readequada para `scrubAbsolutePathsInText(sanitizeSecretsInText(...))` em 4 pontos críticos: `formatCodeFrame`, `extractViteErrorInfo` (JSON/`summaryRawLine`), `extractViteErrorInfo` (fallback de texto puro) e `extractNextErrorInfo`.
+  - **Testes 11, 12 e 13 em `test/reporter.test.mjs` (`86/86` testes passando):**
+    - *Teste 11:* Oxc/Vite (JSON e texto puro) mascarando senhas em `postgres://`, `postgresql://`, `mysql://` e `mongodb+srv://` no summary, codeFrame e prompt mantendo o esquema intacto.
+    - *Teste 12:* Next.js (`extractNextErrorInfo`) mascarando senhas nas mesmas URIs de banco.
+    - *Teste 13:* Regressão para limpeza de caminhos absolutos Windows (`C:\`, `D:/`) e Unix (`/Users/`), mascaramento de chave Stripe (`sk_live_`) e integridade de acentuação UTF-8 ("Olá") no codeFrame.
