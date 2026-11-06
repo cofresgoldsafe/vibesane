@@ -5,10 +5,13 @@ export const DEFAULT_PORTS = [3000, 3001, 5173, 5174, 8080, 8000, 4321] as const
 export const DEFAULT_TCP_TIMEOUT_MS = 300;
 export const DEFAULT_HTTP_TIMEOUT_MS = 2000;
 export const DEFAULT_BODY_READ_TIMEOUT_MS = 500;
+export const DEFAULT_SCRIPT_BODY_READ_TIMEOUT_MS = 1000;
 export const MAX_BODY_BYTES = 1024 * 1024;
+export const MAX_SCRIPT_BODY_BYTES = 8 * 1024 * 1024;
 
 export type LoopbackHost = '127.0.0.1' | '::1';
 export type DetectionFailureReason = 'no_server' | 'non_http' | 'http_timeout';
+export type TruncatedReason = 'size' | 'timeout' | 'error';
 
 export interface PortDetectorOptions {
   port?: number;
@@ -32,6 +35,7 @@ export interface RootHttpSnapshot {
   body: string;
   headersElapsedMs: number;
   truncated: boolean;
+  truncatedReason?: TruncatedReason | null;
 }
 
 export interface PortDetectionResult {
@@ -78,15 +82,15 @@ export async function readBoundedTextBody(
   res: Response,
   maxBytes: number = MAX_BODY_BYTES,
   bodyTimeoutMs: number = DEFAULT_BODY_READ_TIMEOUT_MS,
-): Promise<{ body: string; truncated: boolean }> {
+): Promise<{ body: string; truncated: boolean; truncatedReason: TruncatedReason | null }> {
   const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
   if (!isTextLikeContentType(contentType)) {
     await res.body?.cancel().catch(() => {});
-    return { body: '', truncated: false };
+    return { body: '', truncated: false, truncatedReason: null };
   }
 
   if (!res.body) {
-    return { body: '', truncated: false };
+    return { body: '', truncated: false, truncatedReason: null };
   }
 
   const reader = res.body.getReader();
@@ -94,6 +98,7 @@ export async function readBoundedTextBody(
   const parts: string[] = [];
   let totalBytes = 0;
   let truncated = false;
+  let truncatedReason: TruncatedReason | null = null;
   let timedOut = false;
 
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -101,6 +106,7 @@ export async function readBoundedTextBody(
     timer = setTimeout(() => {
       timedOut = true;
       truncated = true;
+      truncatedReason = 'timeout';
       void reader.cancel().catch(() => {});
       resolve({ kind: 'timeout' });
     }, bodyTimeoutMs);
@@ -116,11 +122,13 @@ export async function readBoundedTextBody(
 
       if (outcome.kind === 'timeout') {
         truncated = true;
+        truncatedReason = 'timeout';
         break;
       }
 
       if (outcome.kind === 'error') {
         truncated = true;
+        truncatedReason = 'error';
         await reader.cancel().catch(() => {});
         break;
       }
@@ -135,13 +143,21 @@ export async function readBoundedTextBody(
       }
 
       const remaining = maxBytes - totalBytes;
-      if (chunk.byteLength >= remaining) {
+      if (remaining <= 0) {
+        truncated = true;
+        truncatedReason = 'size';
+        await reader.cancel().catch(() => {});
+        break;
+      }
+
+      if (chunk.byteLength > remaining) {
         const slice = chunk.subarray(0, remaining);
         if (slice.byteLength > 0) {
           parts.push(decoder.decode(slice, { stream: true }));
           totalBytes += slice.byteLength;
         }
         truncated = true;
+        truncatedReason = 'size';
         await reader.cancel().catch(() => {});
         break;
       }
@@ -151,6 +167,9 @@ export async function readBoundedTextBody(
     }
   } catch {
     truncated = true;
+    if (truncatedReason === null) {
+      truncatedReason = 'error';
+    }
     await reader.cancel().catch(() => {});
   } finally {
     if (timer !== null) {
@@ -159,7 +178,7 @@ export async function readBoundedTextBody(
   }
 
   parts.push(decoder.decode());
-  return { body: parts.join(''), truncated };
+  return { body: parts.join(''), truncated, truncatedReason };
 }
 
 export function probeTcpPort(
@@ -394,7 +413,7 @@ export async function detectServer(
     const headersElapsedMs = Math.max(0, Math.round(performance.now() - fetchStart));
     const contentType = res.headers.get('content-type') ?? '';
     const location = res.headers.get('location') ?? undefined;
-    const { body, truncated } = await readBoundedTextBody(
+    const { body, truncated, truncatedReason } = await readBoundedTextBody(
       res,
       MAX_BODY_BYTES,
       DEFAULT_BODY_READ_TIMEOUT_MS,
@@ -417,6 +436,7 @@ export async function detectServer(
         body,
         headersElapsedMs,
         truncated,
+        truncatedReason,
       },
     };
   } catch (err: unknown) {

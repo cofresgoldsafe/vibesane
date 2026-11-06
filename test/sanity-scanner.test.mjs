@@ -904,4 +904,172 @@ describe('Sanity Scanner Engine (BDD)', () => {
       assert.equal(issues[0].detail.includes('MonorepoSecret123'), false);
     });
   });
+
+  describe('11. Chunks grandes do Webpack (> 1MB até 8MB) e avisos de corte transparente (truncated_body)', () => {
+    it('11a. Chunk do Webpack de 2.8 MB com node_modules primeiro e código do usuário aos 2.8 MB é varrido por completo e detecta segredo', async () => {
+      const fakeStripe = ['sk', 'live', '998877665544332211aabbcc'].join('_');
+      // Constrói ~2.7 MB de módulos node_modules no início
+      const chunkVendorPadding = '/***/ "(app-pages-browser)/./node_modules/huge-pkg/index.js":\n/***/ (function() { return 1; }),\n'.repeat(30000); // ~2.7 MB
+      const userComponent = [
+        '/***/ "(app-pages-browser)/./src/app/Checkout.tsx":',
+        '/***/ (function(__unused_webpack_module, __webpack_exports__, __webpack_require__) {',
+        `  const stripeKey = "${fakeStripe}";`,
+        '}),',
+      ].join('\n');
+      const fullChunk = `(self["webpackChunk_N_E"] = self["webpackChunk_N_E"] || []).push([["app/page"],{\n${chunkVendorPadding}\n${userComponent}\n}]);`;
+
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<!DOCTYPE html><html><body><script src="/_next/static/chunks/app/page.js"></script></body></html>');
+          return;
+        }
+        if (url === '/_next/static/chunks/app/page.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end(fullChunk);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        const secretIssues = res.issues.filter((i) => i.kind === 'secret_leak');
+        assert.equal(secretIssues.length, 1);
+        assert.equal(secretIssues[0].route, 'src/app/Checkout.tsx');
+        assert.ok(secretIssues[0].detail.includes('sk_live_****bbcc'));
+        assert.equal(res.issues.some((i) => i.kind === 'truncated_body'), false);
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('11b. Página HTML que excede 1 MB (1.5 MB) é cortada nos 1024 KB e emite warning [truncated_body] (exceeded 1 MB limit) mantendo ok: true', async () => {
+      const largeHtml = '<!DOCTYPE html><html><body>' + '<div>Safe content</div>\n'.repeat(70000) + '</body></html>'; // ~1.6 MB
+
+      const srv = await startHttpServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(largeHtml);
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        const truncIssues = res.issues.filter((i) => i.kind === 'truncated_body');
+        assert.equal(truncIssues.length, 1);
+        assert.equal(truncIssues[0].severity, 'warning');
+        assert.equal(truncIssues[0].route, '/');
+        assert.equal(truncIssues[0].detail, 'response body truncated on / (exceeded 1 MB limit)');
+        assert.ok(res.message.includes('warning [truncated_body]: response body truncated on / (exceeded 1 MB limit)'));
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('11c. Script que excede 8 MB (~9 MB) é cortado nos 8 MB e emite warning [truncated_body] (exceeded 8 MB limit)', async () => {
+      const hugeScript = '/* harmless */ function f() { return 1; }\n'.repeat(210000); // ~9 MB
+
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<!DOCTYPE html><html><body><script src="/_next/static/chunks/app/page.js"></script></body></html>');
+          return;
+        }
+        if (url === '/_next/static/chunks/app/page.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end(hugeScript);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        const truncIssues = res.issues.filter((i) => i.kind === 'truncated_body');
+        assert.equal(truncIssues.length, 1);
+        assert.equal(truncIssues[0].severity, 'warning');
+        assert.equal(truncIssues[0].route, '/_next/static/chunks/app/page.js');
+        assert.equal(
+          truncIssues[0].detail,
+          'response body truncated on script /_next/static/chunks/app/page.js (exceeded 8 MB limit)',
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('11d. Script cujo stream sofre timeout de leitura (> 1000 ms) emite warning [truncated_body] (read timeout after 1000 ms)', async () => {
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<!DOCTYPE html><html><body><script src="/_next/static/chunks/app/page.js"></script></body></html>');
+          return;
+        }
+        if (url === '/_next/static/chunks/app/page.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.write('/* header part */');
+          // Demora mais que DEFAULT_SCRIPT_BODY_READ_TIMEOUT_MS (1000ms), ex: 1200ms
+          setTimeout(() => {
+            res.end('/* slow trailing part */');
+          }, 1200);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        const truncIssues = res.issues.filter((i) => i.kind === 'truncated_body');
+        assert.equal(truncIssues.length, 1);
+        assert.equal(truncIssues[0].severity, 'warning');
+        assert.equal(truncIssues[0].route, '/_next/static/chunks/app/page.js');
+        assert.equal(
+          truncIssues[0].detail,
+          'response body truncated on script /_next/static/chunks/app/page.js (read timeout after 1000 ms)',
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('11e. Script com erro de stream de rede emite warning [truncated_body] (stream error)', async () => {
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<!DOCTYPE html><html><body><script src="/_next/static/chunks/app/page.js"></script></body></html>');
+          return;
+        }
+        if (url === '/_next/static/chunks/app/page.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.write('/* initial part */');
+          setTimeout(() => {
+            res.destroy();
+          }, 50);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        // Com stream destruído no meio da leitura do body, deve registrar truncated_body (stream error)
+        const truncIssues = res.issues.filter((i) => i.kind === 'truncated_body');
+        assert.ok(truncIssues.length >= 1);
+        assert.equal(truncIssues[0].detail, 'response body truncated on script /_next/static/chunks/app/page.js (stream error)');
+      } finally {
+        await srv.close();
+      }
+    });
+  });
 });

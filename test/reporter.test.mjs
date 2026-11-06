@@ -1062,4 +1062,86 @@ describe('v0.1.2 - Mascaramento de URIs de banco no codeFrame e mensagens de err
     assert.equal(info.codeFrame.includes(dbPass), false);
     assert.ok(info.codeFrame.includes('const greeting = "Olá";'));
   });
+
+  it('14. terminal-ui: formata warning [truncated_body] com prefixo correto e aplica cor amarela com TTY', () => {
+    const reportInput = {
+      ok: true,
+      port: 3000,
+      url: 'http://localhost:3000',
+      message: [
+        'vibesane: connected to http://localhost:3000 (15ms)',
+        'warning [truncated_body]: response body truncated on script /app.js (exceeded 8 MB limit)',
+      ].join('\n'),
+      issues: [
+        {
+          kind: 'truncated_body',
+          severity: 'warning',
+          route: '/app.js',
+          detail: 'response body truncated on script /app.js (exceeded 8 MB limit)',
+        },
+      ],
+      aiPrompt: null,
+    };
+
+    const plain = formatTerminalReport(reportInput, { color: false });
+    assert.ok(plain.includes('warning [truncated_body]: response body truncated on script /app.js (exceeded 8 MB limit)'));
+    assert.equal(plain.includes('\x1b['), false);
+
+    const prevForceColor = process.env.FORCE_COLOR;
+    process.env.FORCE_COLOR = '1';
+    try {
+      const colored = formatTerminalReport(reportInput, { color: true, isTTY: true, env: { FORCE_COLOR: '1' } });
+      assert.ok(colored.includes('warning [truncated_body]'));
+      assert.ok(colored.includes('\x1b[33mwarning [truncated_body]'));
+    } finally {
+      if (prevForceColor === undefined) {
+        delete process.env.FORCE_COLOR;
+      } else {
+        process.env.FORCE_COLOR = prevForceColor;
+      }
+    }
+  });
+
+  it('15. ai-prompt-gen: ignora issues de severidade "warning" (truncated_body) e não polui o prompt da IA', () => {
+    const inputWithOnlyWarning = {
+      port: 3000,
+      url: 'http://localhost:3000',
+      issues: [
+        {
+          kind: 'truncated_body',
+          severity: 'warning',
+          route: '/app.js',
+          detail: 'response body truncated on script /app.js (exceeded 8 MB limit)',
+        },
+      ],
+    };
+
+    const prompt = generateAiFixPrompt(inputWithOnlyWarning);
+    assert.equal(prompt, null, 'Prompt deve ser null quando houver apenas warnings');
+
+    const fakeKey = ['sk', 'live', 'abcdefghijklmnopqrstuvwx'].join('_');
+    const inputWithMixed = {
+      port: 3000,
+      url: 'http://localhost:3000',
+      issues: [
+        {
+          kind: 'truncated_body',
+          severity: 'warning',
+          route: '/app.js',
+          detail: 'response body truncated on script /app.js (exceeded 8 MB limit)',
+        },
+        {
+          kind: 'secret_leak',
+          severity: 'error',
+          route: '/app.js',
+          detail: `Secret leak on /app.js: Stripe secret key (${fakeKey})`,
+        },
+      ],
+    };
+
+    const mixedPrompt = generateAiFixPrompt(inputWithMixed);
+    assert.ok(mixedPrompt);
+    assert.ok(mixedPrompt.includes('[secret_leak]'));
+    assert.equal(mixedPrompt.includes('truncated_body'), false, 'Não deve conter truncated_body no prompt da IA');
+  });
 });
