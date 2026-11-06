@@ -2,10 +2,13 @@ import { performance } from 'node:perf_hooks';
 import {
   assertValidTimeout,
   MAX_BODY_BYTES,
+  MAX_SCRIPT_BODY_BYTES,
   DEFAULT_BODY_READ_TIMEOUT_MS,
+  DEFAULT_SCRIPT_BODY_READ_TIMEOUT_MS,
   readBoundedTextBody,
   type LoopbackHost,
   type RootHttpSnapshot,
+  type TruncatedReason,
 } from './port-detector.js';
 import {
   detectMaskedError,
@@ -376,12 +379,33 @@ export function extractModuleImports(
   return results;
 }
 
+export function formatTruncatedBodyMessage(
+  route: string,
+  isScript: boolean,
+  reason: TruncatedReason | null | undefined,
+  maxBytes: number,
+  timeoutMs: number,
+): string {
+  const resourceLabel = isScript ? `script ${route}` : route;
+  const limitMb = Math.round(maxBytes / (1024 * 1024));
+
+  if (reason === 'timeout') {
+    return `response body truncated on ${resourceLabel} (read timeout after ${timeoutMs} ms)`;
+  }
+  if (reason === 'error') {
+    return `response body truncated on ${resourceLabel} (stream error)`;
+  }
+  return `response body truncated on ${resourceLabel} (exceeded ${limitMb} MB limit)`;
+}
+
 export async function fetchSameOriginHop(
   baseUrl: string,
   initialPath: string,
   signal: AbortSignal,
   routeTimeoutMs: number,
   followRedirects = true,
+  maxBytes: number = MAX_BODY_BYTES,
+  bodyTimeoutMs: number = DEFAULT_BODY_READ_TIMEOUT_MS,
 ): Promise<RootHttpSnapshot> {
   const base = new URL(baseUrl);
   let currentUrl = new URL(initialPath, base);
@@ -423,10 +447,10 @@ export async function fetchSameOriginHop(
       }
     }
 
-    const { body, truncated } = await readBoundedTextBody(
+    const { body, truncated, truncatedReason } = await readBoundedTextBody(
       res,
-      MAX_BODY_BYTES,
-      DEFAULT_BODY_READ_TIMEOUT_MS,
+      maxBytes,
+      bodyTimeoutMs,
     );
 
     return {
@@ -437,6 +461,7 @@ export async function fetchSameOriginHop(
       body,
       headersElapsedMs,
       truncated,
+      truncatedReason,
     };
   }
 }
@@ -559,6 +584,21 @@ export async function runSanityScan(
       truncated: finalRoot.truncated,
     });
 
+    if (finalRoot.truncated) {
+      issues.push({
+        kind: 'truncated_body',
+        severity: 'warning',
+        route: '/',
+        detail: formatTruncatedBodyMessage(
+          '/',
+          false,
+          finalRoot.truncatedReason,
+          MAX_BODY_BYTES,
+          DEFAULT_BODY_READ_TIMEOUT_MS,
+        ),
+      });
+    }
+
     if (finalRoot.statusCode >= 400) {
       const structured =
         extractNextErrorInfo(finalRoot.body, '/') ??
@@ -651,8 +691,25 @@ export async function runSanityScan(
             budgetController.signal,
             routeTimeoutMs,
             true,
+            MAX_SCRIPT_BODY_BYTES,
+            DEFAULT_SCRIPT_BODY_READ_TIMEOUT_MS,
           );
           scannedScripts.push(cleanScriptPath);
+
+          if (snap.truncated) {
+            issues.push({
+              kind: 'truncated_body',
+              severity: 'warning',
+              route: cleanScriptPath,
+              detail: formatTruncatedBodyMessage(
+                cleanScriptPath,
+                true,
+                snap.truncatedReason,
+                MAX_SCRIPT_BODY_BYTES,
+                DEFAULT_SCRIPT_BODY_READ_TIMEOUT_MS,
+              ),
+            });
+          }
 
           if (snap.statusCode >= 400) {
             const structured = extractViteErrorInfo(snap.body, cleanScriptPath);
@@ -742,6 +799,21 @@ export async function runSanityScan(
             headersElapsedMs: snap.headersElapsedMs,
             truncated: snap.truncated,
           });
+
+          if (snap.truncated) {
+            issues.push({
+              kind: 'truncated_body',
+              severity: 'warning',
+              route: routePath,
+              detail: formatTruncatedBodyMessage(
+                routePath,
+                false,
+                snap.truncatedReason,
+                MAX_BODY_BYTES,
+                DEFAULT_BODY_READ_TIMEOUT_MS,
+              ),
+            });
+          }
 
           if (snap.statusCode >= 400) {
             const structured =

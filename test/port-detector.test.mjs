@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { DEFAULT_PORTS, detectServer, probeTcpPort } from '../dist/scanner/port-detector.js';
+import { DEFAULT_PORTS, detectServer, probeTcpPort, readBoundedTextBody } from '../dist/scanner/port-detector.js';
 import { runVibesane } from '../dist/index.js';
 
 /**
@@ -365,6 +365,87 @@ describe('Port Detector & Local Server Scanner (BDD)', () => {
           () => detectServer({ port: 3000, httpTimeoutMs: badTimeout }),
           RangeError,
         );
+      }
+    });
+  });
+
+  describe('10. Bounded Text Body Reader (tamanho exato, corte por size, timeout e stream error)', () => {
+    it('10a. corpo com tamanho EXATAMENTE igual a maxBytes é consumido por completo sem ser truncado', async () => {
+      const exactSize = 1024;
+      const payload = 'x'.repeat(exactSize);
+      const srv = await startHttpServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(payload);
+      });
+
+      try {
+        const res = await fetch(`http://127.0.0.1:${srv.port}`);
+        const result = await readBoundedTextBody(res, exactSize, 500);
+        assert.equal(result.body.length, exactSize);
+        assert.equal(result.body, payload);
+        assert.equal(result.truncated, false);
+        assert.equal(result.truncatedReason, null);
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('10b. corpo com maxBytes + 1 é cortado com truncated: true e truncatedReason: "size"', async () => {
+      const maxSize = 1024;
+      const payload = 'y'.repeat(maxSize + 100);
+      const srv = await startHttpServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(payload);
+      });
+
+      try {
+        const res = await fetch(`http://127.0.0.1:${srv.port}`);
+        const result = await readBoundedTextBody(res, maxSize, 500);
+        assert.equal(result.body.length, maxSize);
+        assert.equal(result.truncated, true);
+        assert.equal(result.truncatedReason, 'size');
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('10c. leitura que estoura o timeout é cortada com truncated: true e truncatedReason: "timeout"', async () => {
+      const srv = await startHttpServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.write('primeira_parte');
+        // Não fecha a conexão imediatamente, espera 200ms
+        setTimeout(() => {
+          res.end('_segunda_parte');
+        }, 200);
+      });
+
+      try {
+        const res = await fetch(`http://127.0.0.1:${srv.port}`);
+        const result = await readBoundedTextBody(res, 1024 * 1024, 50);
+        assert.equal(result.truncated, true);
+        assert.equal(result.truncatedReason, 'timeout');
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('10d. erro no stream é marcado com truncated: true e truncatedReason: "error"', async () => {
+      const srv = await startHttpServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.write('inicio');
+        // Destrói o socket abruptamente simulando falha de rede/stream
+        setTimeout(() => {
+          res.destroy();
+        }, 20);
+      });
+
+      try {
+        const res = await fetch(`http://127.0.0.1:${srv.port}`);
+        const result = await readBoundedTextBody(res, 1024 * 1024, 500);
+        assert.equal(result.truncated, true);
+        assert.equal(result.truncatedReason, 'error');
+      } finally {
+        await srv.close();
       }
     });
   });

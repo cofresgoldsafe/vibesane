@@ -76,6 +76,7 @@ Instruction (code): Fix only the error pointed out above; do not refactor unrela
 - **Masked Error Overlays on `200 OK`:** Detects Next.js and Vite runtime/compile error overlays hidden inside `200 OK` HTML responses, including Next 16 RSC/Flight error payloads and Vite/Oxc code frames.
 - **Client-Side Secret Leaks:** Scans HTML and JS bundles for exposed secrets (`sk_live_*`, `sk_test_*`, `rk_live_*`, `rk_test_*`, `AIzaSy*`, `ghp_*`, `sk-proj-*`, `sk-ant-*`, `*_SECRET`, `*_PRIVATE_KEY`, `DATABASE_URL` with credentials, and hardcoded `password`/`senha` assignments), resolving the original source file inside Turbopack and Webpack chunks while ignoring public keys (`pk_live_*`, `pk_test_*`, `NEXT_PUBLIC_*`, `VITE_*`).
 - **Slow Routes:** Flags routes taking `> 1500ms` to return headers as `warning [slow_route]`.
+- **Truncated Responses:** Flags responses cut off by size or read timeout as non-fatal `warning [truncated_body]` (reporting the exact cause: exceeded limit, read timeout, or stream error), ensuring large bundles are accounted for.
 
 ## Next.js Cold Start (On-Demand Compilation)
 
@@ -90,7 +91,7 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 - **No Headless Browser (Not Playwright/Cypress):** Runs fast HTTP/HTML/JS inspection via `fetch`. It does not execute client-side JavaScript, click buttons, submit forms, or detect crashes that only trigger after DOM user interaction.
 - **HTML-Based Route Discovery:** Discovers sub-routes from `<a href="...">` links rendered in the HTML of `/`. In pure client-side SPAs where `<div id="root"></div>` is empty and routes exist only inside a client-side router, `vibesane` inspects `/` and up to 5 application JS modules (`/src/*`), but does not navigate client-only routes absent from initial HTML.
 - **No Authentication / Session State:** Protected routes redirecting to external login providers are skipped; same-origin redirects are followed up to 3 hops.
-- **Deterministic Caps:** Enforces a `2.5s` global crawl budget, up to `10` routes, `5` scripts, and `1 MB` per response body.
+- **Deterministic Caps:** Enforces a `2.5s` global crawl budget, up to `10` routes, `5` scripts, `1 MB` per HTML page, and `8 MB` per script.
 
 ## CLI Options & Exit Codes
 

@@ -22,7 +22,12 @@ import { MASKED_ERROR_RULES } from '../rules/masked-errors.js';
 export { redactSecret, redactPassword, redactConnectionUri };
 
 export type SanitySeverity = 'error' | 'warning';
-export type SanityIssueKind = 'http_error' | 'masked_error' | 'secret_leak' | 'slow_route';
+export type SanityIssueKind =
+  | 'http_error'
+  | 'masked_error'
+  | 'secret_leak'
+  | 'slow_route'
+  | 'truncated_body';
 
 export interface SanityIssue {
   kind: SanityIssueKind;
