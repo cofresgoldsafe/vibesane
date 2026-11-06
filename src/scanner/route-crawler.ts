@@ -536,7 +536,7 @@ export async function runSanityScan(
                 severity: 'warning',
                 route: '/',
                 elapsedMs: routeTimeoutMs,
-                detail: `slow route / (did not respond within ${routeTimeoutMs}ms — may be dev server compilation; re-run to confirm)`,
+                detail: `slow route / (did not respond within ${routeTimeoutMs}ms - may be dev server compilation; re-run to confirm)`,
               });
             } else {
               issues.push({
@@ -657,14 +657,20 @@ export async function runSanityScan(
           if (snap.statusCode >= 400) {
             const structured = extractViteErrorInfo(snap.body, cleanScriptPath);
             const snippet = structured ? structured.summary : sanitizeErrorSnippet(snap.body);
+            let detail: string;
+            if (snippet && snippet.startsWith(cleanScriptPath)) {
+              detail = `HTTP ${snap.statusCode} on script ${snippet}`;
+            } else if (snippet) {
+              detail = `HTTP ${snap.statusCode} on script ${cleanScriptPath}: ${snippet}`;
+            } else {
+              detail = `HTTP ${snap.statusCode} on script ${cleanScriptPath}`;
+            }
             issues.push({
               kind: 'http_error',
               severity: 'error',
               route: cleanScriptPath,
               statusCode: snap.statusCode,
-              detail: snippet
-                ? `HTTP ${snap.statusCode} on script ${cleanScriptPath}: ${snippet}`
-                : `HTTP ${snap.statusCode} on script ${cleanScriptPath}`,
+              detail,
               ...(snippet ? { maskedSnippet: snippet } : {}),
               ...(structured?.codeFrame ? { codeFrame: structured.codeFrame } : {}),
             });
@@ -779,7 +785,7 @@ export async function runSanityScan(
               severity: 'warning',
               route: routePath,
               elapsedMs: snap.headersElapsedMs,
-              detail: `slow route ${routePath} (${snap.headersElapsedMs}ms — may be dev server compilation; re-run to confirm)`,
+              detail: `slow route ${routePath} (${snap.headersElapsedMs}ms - may be dev server compilation; re-run to confirm)`,
             });
           }
 
@@ -803,7 +809,7 @@ export async function runSanityScan(
                 severity: 'warning',
                 route: routePath,
                 elapsedMs: routeTimeoutMs,
-                detail: `slow route ${routePath} (did not respond within ${routeTimeoutMs}ms — may be dev server compilation; re-run to confirm)`,
+                detail: `slow route ${routePath} (did not respond within ${routeTimeoutMs}ms - may be dev server compilation; re-run to confirm)`,
               });
             } else {
               subRouteOutcomes.set(routePath, { path: routePath });

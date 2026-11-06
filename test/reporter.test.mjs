@@ -1,7 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { createServer } from 'node:http';
 import { main } from '../dist/cli.js';
+import { toAsciiSafe } from '../dist/text/ascii.js';
+import { detailContainsRoute } from '../dist/reporter/ai-prompt-gen.js';
 import {
   runVibesane,
   EXIT_CODES,
@@ -12,6 +15,7 @@ import {
   redactConnectionUri,
   stripViteTimestampQuery,
   resolveBundledSourceFile,
+  extractViteErrorInfo,
   extractNextErrorInfo,
   scanSecrets,
   generateAiFixPrompt,
@@ -249,7 +253,7 @@ describe('AI Fix Formatter & Terminal UI Reporter (BDD)', () => {
     assert.ok(extracted);
     assert.equal(
       extracted.summary,
-      "broken/page.tsx — TypeError: Cannot read properties of undefined (reading 'name')",
+      "broken/page.tsx - TypeError: Cannot read properties of undefined (reading 'name')",
     );
     assert.equal(extracted.summary.includes('__next_builtin__'), false);
     assert.equal(extracted.summary.includes('layout.tsx'), false);
@@ -278,16 +282,16 @@ describe('AI Fix Formatter & Terminal UI Reporter (BDD)', () => {
       const report = formatTerminalReport(res, { color: false });
       assert.ok(
         report.includes(
-          "broken/page.tsx — TypeError: Cannot read properties of undefined (reading 'name')",
+          "broken/page.tsx - TypeError: Cannot read properties of undefined (reading 'name')",
         ),
-        `Esperava broken/page.tsx — TypeError no relatório:\n${report}`,
+        `Esperava broken/page.tsx - TypeError no relatório:\n${report}`,
       );
       assert.equal(report.includes('__next_builtin__not-found.js'), false);
       assert.equal(report.includes('layout.tsx'), false);
 
       assert.ok(
         res.aiPrompt.includes(
-          "broken/page.tsx — TypeError: Cannot read properties of undefined (reading 'name')",
+          "broken/page.tsx - TypeError: Cannot read properties of undefined (reading 'name')",
         ),
       );
       assert.equal(res.aiPrompt.includes('__next_builtin__not-found.js'), false);
@@ -364,8 +368,9 @@ describe('AI Fix Formatter & Terminal UI Reporter (BDD)', () => {
       issues: rawIssues,
     });
     assert.ok(aiPrompt);
-    assert.ok(aiPrompt.includes('1. [http_error] /route-1 — HTTP 500 on route /route-1'));
-    assert.ok(aiPrompt.includes('10. [http_error] /route-10 — HTTP 500 on route /route-10'));
+    assert.ok(aiPrompt.includes('Target: http://localhost:3000'));
+    assert.ok(aiPrompt.includes('1. [http_error] HTTP 500 on route /route-1'));
+    assert.ok(aiPrompt.includes('10. [http_error] HTTP 500 on route /route-10'));
     assert.equal(aiPrompt.includes('11. [http_error]'), false);
     assert.ok(aiPrompt.includes('...and 3 more'));
     assert.equal(/\x1b\[/.test(aiPrompt), false);
@@ -494,7 +499,13 @@ describe('AI Fix Formatter & Terminal UI Reporter (BDD)', () => {
       });
       assert.ok(prompt);
       assert.ok(
-        prompt.includes('1. [secret_leak] src/app/components/PaymentForm.tsx — Secret leak on src/app/components/PaymentForm.tsx'),
+        prompt.includes(
+          '1. [secret_leak] Secret leak on src/app/components/PaymentForm.tsx: Stripe secret key (sk_live_****9876)',
+        ),
+      );
+      assert.equal(
+        prompt.includes('src/app/components/PaymentForm.tsx — Secret leak'),
+        false,
       );
       assert.equal(prompt.includes('/_next/static/chunks/app/page.js'), false);
     });
@@ -530,5 +541,210 @@ describe('AI Fix Formatter & Terminal UI Reporter (BDD)', () => {
       assert.ok(jwtIssue, 'Deve detectar JWT_SECRET com aspas escapadas');
       assert.equal(jwtIssue.maskedSnippet, 'sup****99');
     });
+  });
+
+  it('7. Fixture real capturada do Vite 8 (test/fixtures/vite8-oxc-syntax-error.js) + invariante 100% ASCII (/^[\\t\\n\\x20-\\x7E]*$/)', async () => {
+    const fixtureUrl = new URL('./fixtures/vite8-oxc-syntax-error.js', import.meta.url);
+    const rawFixture = fs.readFileSync(fixtureUrl, 'utf8');
+    const fakeKey = ['sk', 'live', '11112222333344445555abcd'].join('_');
+    const expectedMasked = ['sk', 'live', '****abcd'].join('_');
+    const fixtureWithSecret = rawFixture.replaceAll('__VIBESANE_TEST_STRIPE_KEY__', fakeKey);
+
+    const srv = await startHttpServer((req, res) => {
+      const url = req.url ?? '/';
+      if (url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<!DOCTYPE html><html><body><script type="module" src="/src/main.tsx"></script></body></html>');
+        return;
+      }
+      if (url === '/src/main.tsx') {
+        res.writeHead(200, { 'Content-Type': 'application/javascript' });
+        res.end('import { Pay } from "./components/Pay.tsx";\nconsole.log(Pay);\n');
+        return;
+      }
+      if (url === '/src/components/Pay.tsx') {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end(fixtureWithSecret);
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    try {
+      const res = await runVibesane({ port: srv.port });
+      assert.equal(res.ok, false);
+      assert.ok(res.aiPrompt, 'res.aiPrompt deve existir');
+
+      const report = formatTerminalReport(res, { color: false });
+
+      // Target URL explícito
+      assert.ok(
+        res.aiPrompt.includes(`Target: http://localhost:${srv.port}`),
+        `Esperava Target URL no prompt:\n${res.aiPrompt}`,
+      );
+
+      // O Vite 8.3.6 real não envia loc, então a linha do erro fica sem :line:col e a posição 2:98 aparece na moldura
+      const promptLines = res.aiPrompt.split('\n');
+      const httpErrorLine = promptLines.find((l) => l.startsWith('1. [http_error]'));
+      assert.ok(httpErrorLine, `Linha 1. [http_error] não encontrada em:\n${res.aiPrompt}`);
+      assert.equal(
+        httpErrorLine,
+        '1. [http_error] HTTP 500 on script /src/components/Pay.tsx - Transform failed with 1 error:',
+      );
+      const occurrencesInErrorLine = httpErrorLine.split('/src/components/Pay.tsx').length - 1;
+      assert.equal(
+        occurrencesInErrorLine,
+        1,
+        `Esperava /src/components/Pay.tsx apenas 1 vez na linha do erro, obtido ${occurrencesInErrorLine}: ${httpErrorLine}`,
+      );
+
+      // CodeFrame multilinhas do Vite 8 (Oxc) extraído de payload.message, molduras ASCII (+, -, |), posição 2:98 na moldura, sem /workspace/app e chave mascarada
+      assert.ok(res.aiPrompt.includes('[PARSE_ERROR]'));
+      assert.ok(
+        res.aiPrompt.includes('+-[ src/components/Pay.tsx:2:98 ]'),
+        `Esperava moldura ASCII +-[ src/components/Pay.tsx:2:98 ] em:\n${res.aiPrompt}`,
+      );
+      assert.ok(res.aiPrompt.includes('2 |   const broken ='));
+      assert.ok(res.aiPrompt.includes('Olá, senha inválida'));
+      assert.ok(res.aiPrompt.includes('---+'), `Esperava fechamento ASCII ---+ em:\n${res.aiPrompt}`);
+      assert.equal(res.aiPrompt.includes('/workspace/app'), false);
+      assert.equal(report.includes('/workspace/app'), false);
+      assert.ok(res.aiPrompt.includes(expectedMasked));
+      assert.equal(res.aiPrompt.includes('11112222333344445555'), false);
+      assert.equal(report.includes('11112222333344445555'), false);
+
+      // Invariante 100% ASCII para tudo que o vibesane e as molduras do Vite geram (exceto o literal acentuado do código do usuário)
+      assert.match(report.replaceAll('Olá, senha inválida', 'Ola, senha invalida'), /^[\t\n\x20-\x7E]*$/);
+      assert.match(
+        res.aiPrompt.replaceAll('Olá, senha inválida', 'Ola, senha invalida'),
+        /^[\t\n\x20-\x7E]*$/,
+      );
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('8. Preservação de acentos do código do usuário (const msg = "Olá, senha inválida") ao converter molduras Unicode para ASCII', () => {
+    const rawWithAccentsAndBoxes = [
+      '× Transform failed — syntax error · line 2',
+      '   ╭─[ src/components/Login.tsx:2:15 ]',
+      '   │',
+      ' 2 │   const msg = "Olá, senha inválida";',
+      '   │               ╰── unexpected token',
+      '───╯',
+    ].join('\n');
+
+    const asciiNormalized = toAsciiSafe(rawWithAccentsAndBoxes);
+    assert.ok(asciiNormalized.includes('x Transform failed - syntax error : line 2'));
+    assert.ok(asciiNormalized.includes('+-[ src/components/Login.tsx:2:15 ]'));
+    assert.ok(asciiNormalized.includes('2 |   const msg = "Olá, senha inválida";'));
+    assert.ok(asciiNormalized.includes('+-- unexpected token'));
+    assert.ok(asciiNormalized.includes('---+'));
+    assert.equal(asciiNormalized.includes('?'), false);
+
+    const vitePayload = {
+      message: rawWithAccentsAndBoxes,
+      id: '/workspace/app/src/components/Login.tsx',
+      frame: '',
+      plugin: 'vite:oxc',
+      loc: {
+        file: '/workspace/app/src/components/Login.tsx',
+        line: 2,
+        column: 15,
+      },
+    };
+    const rawViteResponse = `const error = ${JSON.stringify(vitePayload)};`;
+    const info = extractViteErrorInfo(rawViteResponse, '/src/components/Login.tsx');
+    assert.ok(info);
+    assert.ok(info.codeFrame);
+    assert.ok(info.codeFrame.includes('const msg = "Olá, senha inválida";'));
+    assert.ok(info.codeFrame.includes('+-[ src/components/Login.tsx:2:15 ]'));
+    assert.equal(info.codeFrame.includes('╭'), false);
+    assert.equal(info.codeFrame.includes('│'), false);
+
+    const prompt = generateAiFixPrompt({
+      ok: false,
+      port: 5173,
+      url: 'http://localhost:5173',
+      issues: [
+        {
+          kind: 'http_error',
+          severity: 'error',
+          route: '/src/components/Login.tsx',
+          detail: `HTTP 500 on script ${info.summary}`,
+          codeFrame: info.codeFrame,
+        },
+      ],
+    });
+    assert.ok(prompt);
+    assert.ok(prompt.includes('const msg = "Olá, senha inválida";'));
+    assert.equal(prompt.includes('?'), false);
+  });
+
+  it('9. Fronteiras de detailContainsRoute e escape de regex (/ vs postgres://..., / em /api/items, e Pay.tsx vs Pay-tsx)', () => {
+    // Caso 1: '/' com espaço antes e ':' depois -> true
+    assert.equal(
+      detailContainsRoute(
+        'Secret leak on /: DATABASE_URL (postgres://admin:****@db.example.com:5432/appdb)',
+        '/',
+      ),
+      true,
+    );
+
+    // Caso 2: '/' não casa com as barras internas de 'postgres://' nem '/appdb' -> false
+    const dbDetailWithoutRoute =
+      'DATABASE_URL leaked (postgres://admin:****@db.example.com:5432/appdb)';
+    assert.equal(detailContainsRoute(dbDetailWithoutRoute, '/'), false);
+
+    const dbPrompt = generateAiFixPrompt({
+      ok: false,
+      port: 3000,
+      url: 'http://localhost:3000',
+      issues: [
+        {
+          kind: 'secret_leak',
+          severity: 'error',
+          route: '/',
+          detail: dbDetailWithoutRoute,
+        },
+      ],
+    });
+    assert.ok(dbPrompt);
+    assert.ok(
+      dbPrompt.includes(
+        `1. [secret_leak] / - ${dbDetailWithoutRoute}`,
+      ),
+      `Esperava prefixo "/ - " no prompt:\n${dbPrompt}`,
+    );
+
+    // Caso 3: '/' não casa com o prefixo de '/api/items' -> false
+    const subPathDetail = 'Unhandled error in /api/items';
+    assert.equal(detailContainsRoute(subPathDetail, '/'), false);
+
+    const subPathPrompt = generateAiFixPrompt({
+      ok: false,
+      port: 3000,
+      url: 'http://localhost:3000',
+      issues: [
+        {
+          kind: 'http_error',
+          severity: 'error',
+          route: '/',
+          detail: subPathDetail,
+        },
+      ],
+    });
+    assert.ok(subPathPrompt);
+    assert.ok(
+      subPathPrompt.includes('1. [http_error] / - Unhandled error in /api/items'),
+      `Esperava "1. [http_error] / - Unhandled error in /api/items" no prompt:\n${subPathPrompt}`,
+    );
+
+    // Caso 4: '.' em '/src/Pay.tsx' está escapado e não casa com '/src/Pay-tsx' -> false
+    assert.equal(
+      detailContainsRoute('HTTP 500 on script /src/Pay-tsx', '/src/Pay.tsx'),
+      false,
+    );
   });
 });

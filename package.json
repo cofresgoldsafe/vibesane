@@ -4,6 +4,25 @@
   "description": "Test your vibe-coded web app in 3 seconds. Zero configs, zero setup, zero excuses.",
   "type": "module",
   "license": "MIT",
+  "author": "Alexandre Arrais",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cofresgoldsafe/vibesane.git"
+  },
+  "homepage": "https://github.com/cofresgoldsafe/vibesane#readme",
+  "bugs": {
+    "url": "https://github.com/cofresgoldsafe/vibesane/issues"
+  },
+  "keywords": [
+    "vibe-coding",
+    "sanity-check",
+    "cli",
+    "preflight",
+    "secret-scanner",
+    "nextjs",
+    "vite",
+    "ai-prompt"
+  ],
   "engines": {
     "node": ">=22.13.0"
   },
@@ -26,7 +45,8 @@
     "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
-    "test": "npm run build && node --test test/cli.test.mjs test/port-detector.test.mjs test/sanity-scanner.test.mjs test/reporter.test.mjs",
+    "test": "node --test test/cli.test.mjs test/port-detector.test.mjs test/sanity-scanner.test.mjs test/reporter.test.mjs",
+    "prepack": "npm run build",
     "prepublishOnly": "npm test"
   },
   "devDependencies": {
