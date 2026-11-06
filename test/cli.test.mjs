@@ -67,7 +67,7 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
       assert.equal(resPort.url, `http://localhost:${srv.port}`);
       assert.match(
         resPort.message,
-        /^vibesane: connected to http:\/\/localhost:\d+ \(\d+ms\)$/,
+        /^vibesane: connected to http:\/\/localhost:\d+ \(\d+ms\)\ninfo: checked 1 page, 0 scripts$/,
       );
     } finally {
       await srv.close();
@@ -96,7 +96,7 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
           assert.equal(res.stderr, '');
           assert.match(
             res.stdout,
-            /^vibesane: connected to http:\/\/localhost:\d+ \(\d+ms\)$/,
+            /^vibesane: connected to http:\/\/localhost:\d+ \(\d+ms\)\ninfo: checked 1 page, 0 scripts$/,
           );
         }
       } finally {

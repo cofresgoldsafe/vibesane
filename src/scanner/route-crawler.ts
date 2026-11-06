@@ -93,7 +93,7 @@ const PRIORITY_SCRIPT_SUBSTRINGS = [
 const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
-function isSameLocalOrigin(candidate: URL, base: URL): boolean {
+export function isSameLocalOrigin(candidate: URL, base: URL): boolean {
   if (candidate.origin === base.origin) {
     return true;
   }
@@ -561,7 +561,7 @@ export async function runSanityScan(
                 severity: 'warning',
                 route: '/',
                 elapsedMs: routeTimeoutMs,
-                detail: `slow route / (did not respond within ${routeTimeoutMs}ms - may be dev server compilation; re-run to confirm)`,
+                detail: `slow route / -> ${redirectTarget.pathname} (did not respond within ${routeTimeoutMs}ms - may be dev server compilation; re-run to confirm)`,
               });
             } else {
               issues.push({
@@ -599,6 +599,9 @@ export async function runSanityScan(
       });
     }
 
+    const isFinalRootRedirect =
+      finalRoot.statusCode >= 300 && finalRoot.statusCode < 400;
+
     if (finalRoot.statusCode >= 400) {
       const structured =
         extractNextErrorInfo(finalRoot.body, '/') ??
@@ -631,24 +634,28 @@ export async function runSanityScan(
           ...(codeFrame ? { codeFrame } : {}),
         });
       }
-    } else if (isHtmlLike(finalRoot.contentType, finalRoot.body)) {
+    } else if (!isFinalRootRedirect && isHtmlLike(finalRoot.contentType, finalRoot.body)) {
       issues.push(...detectMaskedError(finalRoot.body, '/'));
     }
 
-    if (finalRoot.body.length > 0) {
+    if (!isFinalRootRedirect && finalRoot.body.length > 0) {
       issues.push(...scanSecrets(finalRoot.body, '/'));
     }
 
-    const candidateScripts = extractCandidateScripts(
-      finalRoot.body,
-      baseOrigin,
-      maxScripts,
-    );
-    const subRoutes = extractInternalLinks(
-      finalRoot.body,
-      baseOrigin,
-      Math.max(0, maxRoutes - 1),
-    );
+    const candidateScripts = isFinalRootRedirect
+      ? []
+      : extractCandidateScripts(
+          finalRoot.body,
+          baseOrigin,
+          maxScripts,
+        );
+    const subRoutes = isFinalRootRedirect
+      ? []
+      : extractInternalLinks(
+          finalRoot.body,
+          baseOrigin,
+          Math.max(0, maxRoutes - 1),
+        );
 
     const scheduledScripts = new Set<string>(candidateScripts);
     const subRouteOutcomes = new Map<string, RouteScanItem>();
@@ -815,6 +822,9 @@ export async function runSanityScan(
             });
           }
 
+          const isSubRouteRedirect =
+            snap.statusCode >= 300 && snap.statusCode < 400;
+
           if (snap.statusCode >= 400) {
             const structured =
               extractNextErrorInfo(snap.body, routePath) ??
@@ -847,7 +857,7 @@ export async function runSanityScan(
                 ...(codeFrame ? { codeFrame } : {}),
               });
             }
-          } else if (isHtmlLike(snap.contentType, snap.body)) {
+          } else if (!isSubRouteRedirect && isHtmlLike(snap.contentType, snap.body)) {
             issues.push(...detectMaskedError(snap.body, routePath));
           }
 
@@ -861,7 +871,7 @@ export async function runSanityScan(
             });
           }
 
-          if (snap.body.length > 0) {
+          if (!isSubRouteRedirect && snap.body.length > 0) {
             issues.push(...scanSecrets(snap.body, routePath));
           }
         } catch (err: unknown) {

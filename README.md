@@ -38,7 +38,16 @@ npx vibesane | clip
 > - **PowerShell:** `[Console]::OutputEncoding = [Text.Encoding]::UTF8; npx vibesane | Set-Clipboard`
 > - **`cmd.exe`:** `chcp 65001 >nul && npx vibesane | clip`
 
-## Real Output Example
+## Real Output Examples
+
+### Clean Scan (All Good)
+
+```text
+vibesane: connected to http://localhost:5173 (29ms)
+info: checked 1 page, 2 scripts
+```
+
+### Sanity Failure (Structured Code Frame & Secret Redaction)
 
 ```text
 vibesane: sanity check failed on http://localhost:5173 (2 error(s))
@@ -52,6 +61,7 @@ error [http_error]: HTTP 500 on script /src/components/Pay.tsx:2:98 - [PARSE_ERR
      |                                                                                                  +-- `,` or `}` expected
   ---+
 error [secret_leak]: Secret leak on /src/components/Pay.tsx: Stripe secret key (sk_live_****abcd)
+info: checked 1 page, 3 scripts
 
 AI FIX PROMPT (copy & paste into Cursor / Claude Code / Gemini CLI):
 Target: http://localhost:5173
@@ -83,6 +93,13 @@ Instruction (code): Fix only the error pointed out above; do not refactor unrela
 Right after starting `next dev`, Next.js compiles routes on demand on the very first request:
 
 - If the root route `/` takes **more than 2 seconds** to compile, the port detector exits with an HTTP timeout (exit code `1`: `port 3000 accepted the connection but took >2s to respond (still compiling?)`).
+- If the root route `/` redirects to a local page (e.g., `/` -> `307` to `/login`) that takes longer than the route timeout to compile, `vibesane` outputs:
+  ```text
+  vibesane: connected to http://localhost:3000 (15ms)
+  warning [slow_route]: slow route / -> /login (did not respond within 2000ms - may be dev server compilation; re-run to confirm)
+  info: nothing was checked (/ did not respond in time); re-run after the dev server finishes compiling
+  ```
+  The exit code remains `0` because dev server compilation is not an application defect.
 - If sub-routes take too long to compile on first hit, they are reported as `warning [slow_route]` or `info: N route(s) not checked (time budget reached)`.
 - **Fix:** Simply **run `npx vibesane` again** — once the dev server has compiled and cached the route, the scan finishes in milliseconds.
 

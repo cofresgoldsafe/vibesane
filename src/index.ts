@@ -50,6 +50,7 @@ import {
   selectScriptsToFetch,
   extractModuleImports,
   formatTruncatedBodyMessage,
+  isSameLocalOrigin,
   runSanityScan,
   type RouteScanItem,
   type SanityScanOptions,
@@ -191,24 +192,80 @@ function validateSanityScanOptions(options: SanityScanOptions): void {
   }
 }
 
+function determineCoverageLine(
+  detection: PortDetectionResult,
+  routes: readonly RouteScanItem[],
+  scannedScripts: readonly string[],
+  warnings: readonly SanityIssue[],
+): string {
+  const checkedPagesCount = routes.filter((r) => {
+    if (r.skipped || r.statusCode === undefined) {
+      return false;
+    }
+    if (r.statusCode >= 300 && r.statusCode < 400) {
+      return false;
+    }
+    return true;
+  }).length;
+
+  const checkedScriptsCount = scannedScripts.length;
+
+  if (checkedPagesCount === 0) {
+    const hasRootSlowRoute = warnings.some(
+      (w) => w.kind === 'slow_route' && w.route === '/',
+    );
+    if (hasRootSlowRoute) {
+      return 'info: nothing was checked (/ did not respond in time); re-run after the dev server finishes compiling';
+    }
+
+    if (
+      detection.url &&
+      detection.rootResponse &&
+      detection.rootResponse.statusCode >= 300 &&
+      detection.rootResponse.statusCode < 400 &&
+      typeof detection.rootResponse.location === 'string'
+    ) {
+      try {
+        const base = new URL(detection.url);
+        const target = new URL(detection.rootResponse.location, base);
+        if (!isSameLocalOrigin(target, base)) {
+          return 'info: nothing was checked (/ redirects outside the local server)';
+        }
+      } catch {
+        // Fallback silently if URL parsing fails
+      }
+    }
+
+    return 'info: nothing was checked';
+  }
+
+  const pageLabel = checkedPagesCount === 1 ? '1 page' : `${checkedPagesCount} pages`;
+  const scriptLabel = checkedScriptsCount === 1 ? '1 script' : `${checkedScriptsCount} scripts`;
+  return `info: checked ${pageLabel}, ${scriptLabel}`;
+}
+
 function formatScanMessage(
   detection: PortDetectionResult,
   ok: boolean,
   errors: readonly SanityIssue[],
   warnings: readonly SanityIssue[],
   skippedRoutes: readonly string[],
+  routes: readonly RouteScanItem[],
+  scannedScripts: readonly string[],
 ): string {
   const alsoSuffix =
     detection.alsoActivePorts.length > 0
       ? ` (also active: ${detection.alsoActivePorts.join(', ')})`
       : '';
   const baseLine = `vibesane: connected to ${detection.url} (${detection.elapsedMs}ms)${alsoSuffix}`;
+  const coverageLine = determineCoverageLine(detection, routes, scannedScripts, warnings);
 
   if (ok) {
     const lines = [baseLine];
     for (const w of warnings) {
       lines.push(`warning [${w.kind}]: ${stripViteTimestampQuery(w.detail)}`);
     }
+    lines.push(coverageLine);
     if (skippedRoutes.length > 0) {
       lines.push(
         `info: ${skippedRoutes.length} route(s) not checked (time budget reached): ${skippedRoutes.join(', ')}`,
@@ -227,6 +284,7 @@ function formatScanMessage(
   for (const w of warnings) {
     lines.push(`warning [${w.kind}]: ${stripViteTimestampQuery(w.detail)}`);
   }
+  lines.push(coverageLine);
   if (skippedRoutes.length > 0) {
     lines.push(
       `info: ${skippedRoutes.length} route(s) not checked (time budget reached): ${skippedRoutes.join(', ')}`,
@@ -282,7 +340,15 @@ export async function runVibesane(options: VibesaneOptions = {}): Promise<Vibesa
   const warnings = normalizedIssues.filter((i) => i.severity === 'warning');
   const ok = errors.length === 0;
 
-  const message = formatScanMessage(detection, ok, errors, warnings, scan.skippedRoutes);
+  const message = formatScanMessage(
+    detection,
+    ok,
+    errors,
+    warnings,
+    scan.skippedRoutes,
+    scan.routes,
+    scan.scannedScripts,
+  );
   const aiPrompt = generateAiFixPrompt({
     ok,
     port: detection.port,

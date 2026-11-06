@@ -10,6 +10,7 @@ import {
   detectMaskedError,
   scanSecrets,
   selectScriptsToFetch,
+  formatTerminalReport,
 } from '../dist/index.js';
 
 /**
@@ -1067,6 +1068,434 @@ describe('Sanity Scanner Engine (BDD)', () => {
         const truncIssues = res.issues.filter((i) => i.kind === 'truncated_body');
         assert.ok(truncIssues.length >= 1);
         assert.equal(truncIssues[0].detail, 'response body truncated on script /_next/static/chunks/app/page.js (stream error)');
+      } finally {
+        await srv.close();
+      }
+    });
+  });
+
+  describe('12. Linha de Cobertura e Diagnostico de Servidor Frio (v0.1.3)', () => {
+    it('12a. Cenário OK com páginas e scripts inspecionados (info: checked 1 page, 2 scripts)', async () => {
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`
+            <html>
+              <head>
+                <script src="/src/main.js"></script>
+                <script src="/src/vendor.js"></script>
+              </head>
+              <body><h1>Clean App</h1></body>
+            </html>
+          `);
+          return;
+        }
+        if (url === '/src/main.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end('console.log("main");');
+          return;
+        }
+        if (url === '/src/vendor.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end('console.log("vendor");');
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.equal(res.issues.length, 0);
+        assert.ok(
+          res.message.includes('info: checked 1 page, 2 scripts'),
+          `Esperava linha de cobertura na mensagem:\n${res.message}`,
+        );
+        const lines = res.message.split('\n');
+        assert.ok(lines[0].startsWith('vibesane: connected to http://localhost:'));
+        assert.equal(lines[1], 'info: checked 1 page, 2 scripts');
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12b. Pluralidade correta (2 pages, 1 script)', async () => {
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`
+            <html>
+              <head><script src="/src/app.js"></script></head>
+              <body><a href="/about">About</a></body>
+            </html>
+          `);
+          return;
+        }
+        if (url === '/about') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><body>About page</body></html>');
+          return;
+        }
+        if (url === '/src/app.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end('console.log("app");');
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.ok(res.message.includes('info: checked 2 pages, 1 script'));
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12c. Cenário de falha (ok: false): linha de cobertura aparece depois dos erros error [...]', async () => {
+      const fakeStripeKey = ['sk', 'live', '11223344556677889900abcd'].join('_');
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`
+            <html>
+              <head><script src="/src/broken.js"></script></head>
+              <body><h1>Broken</h1></body>
+            </html>
+          `);
+          return;
+        }
+        if (url === '/src/broken.js') {
+          res.writeHead(500, { 'Content-Type': 'application/javascript' });
+          res.end(`const key = "${fakeStripeKey}"; throw new Error("crash");`);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        const lines = res.message.split('\n');
+        const errIndex = lines.findIndex((l) => l.startsWith('error ['));
+        const coverageIndex = lines.findIndex((l) => l.startsWith('info: checked '));
+        assert.ok(errIndex !== -1, 'Deve conter linha error [...]');
+        assert.ok(coverageIndex !== -1, 'Deve conter linha info: checked ...');
+        assert.ok(coverageIndex > errIndex, 'Linha de cobertura deve vir apos as linhas de erro');
+        assert.equal(lines[coverageIndex], 'info: checked 1 page, 1 script');
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12d. Raiz 200 sem scripts: info: checked 1 page, 0 scripts (não aciona nothing was checked)', async () => {
+      const srv = await startHttpServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html><body>Static HTML without scripts</body></html>');
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.ok(res.message.includes('info: checked 1 page, 0 scripts'));
+        assert.equal(res.message.includes('nothing was checked'), false);
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12e. Redirect 307 com destino lento estourando routeTimeoutMs: slow route / -> /login (omite query string) + info: nothing was checked (/ did not respond in time) + ok: true', async () => {
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(307, {
+            Location: '/login?token=super-secret-param&next=/dashboard',
+          });
+          res.end();
+          return;
+        }
+        if (url.startsWith('/login')) {
+          // Segura a resposta além do routeTimeoutMs (100ms)
+          setTimeout(() => {
+            if (!res.writableEnded) {
+              res.writeHead(200, { 'Content-Type': 'text/html' });
+              res.end('<html><body>Login</body></html>');
+            }
+          }, 300);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({
+          port: srv.port,
+          routeTimeoutMs: 100,
+        });
+
+        // Lentidão de compilação em dev server não falha a sanidade: ok: true
+        assert.equal(res.ok, true);
+        const slowIssue = res.issues.find((i) => i.kind === 'slow_route' && i.route === '/');
+        assert.ok(slowIssue, 'Deve registrar slow_route na raiz');
+        assert.ok(
+          slowIssue.detail.includes('slow route / -> /login (did not respond within 100ms'),
+          `Mensagem esperada com /login:\n${slowIssue.detail}`,
+        );
+        // Não deve expor a query string (?token=...)
+        assert.equal(slowIssue.detail.includes('token='), false);
+        assert.equal(slowIssue.detail.includes('super-secret-param'), false);
+
+        assert.ok(
+          res.message.includes(
+            'info: nothing was checked (/ did not respond in time); re-run after the dev server finishes compiling',
+          ),
+          `Mensagem inesperada:\n${res.message}`,
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12f. Redirect 307 para fora do servidor local (https://example.com/login): info: nothing was checked (/ redirects outside the local server) sem slow_route + ok: true', async () => {
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(307, {
+            Location: 'https://example.com/login?partner=corp',
+          });
+          res.end();
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.equal(res.issues.some((i) => i.kind === 'slow_route'), false);
+        assert.ok(
+          res.message.includes(
+            'info: nothing was checked (/ redirects outside the local server)',
+          ),
+          `Mensagem inesperada:\n${res.message}`,
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12g. Redirect 307 sem header Location: info: nothing was checked + ok: true', async () => {
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(307);
+          res.end();
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        const lines = res.message.split('\n');
+        assert.equal(lines[1], 'info: nothing was checked');
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12h. Sub-rota que termina em status 3xx externo não conta como página inspecionada (contagem uniforme)', async () => {
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`
+            <html>
+              <body>
+                <a href="/external-redirect">Auth SSO</a>
+                <a href="/internal-page">Dashboard</a>
+              </body>
+            </html>
+          `);
+          return;
+        }
+        if (url === '/external-redirect') {
+          res.writeHead(302, { Location: 'https://auth0.example.com/authorize' });
+          res.end();
+          return;
+        }
+        if (url === '/internal-page') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><body>Dashboard OK</body></html>');
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        // / conta (200), /internal-page conta (200), /external-redirect não conta (302) -> exatamente 2 pages
+        assert.ok(
+          res.message.includes('info: checked 2 pages, 0 scripts'),
+          `Mensagem esperava 2 pages, obteve:\n${res.message}`,
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12i. terminal-ui e NO_COLOR: formato ASCII limpo, info sem cor própria e primeira linha colorida com TTY', async () => {
+      const srv = await startHttpServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html><head><script src="/app.js"></script></head><body>OK</body></html>');
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+
+        // 1. Sem cor (NO_COLOR ou color: false)
+        const plainReport = formatTerminalReport(res, { color: false });
+        assert.equal(plainReport.includes('\x1b['), false);
+        assert.ok(plainReport.includes('info: checked 1 page, 1 script'));
+
+        // 2. Com cor ativa (color: true, FORCE_COLOR: '1')
+        const prevForceColor = process.env.FORCE_COLOR;
+        process.env.FORCE_COLOR = '1';
+        try {
+          const coloredReport = formatTerminalReport(res, {
+            color: true,
+            isTTY: true,
+            env: { FORCE_COLOR: '1' },
+          });
+          const lines = coloredReport.split('\n');
+          // Primeira linha verde
+          assert.ok(lines[0].startsWith('\x1b[32mvibesane: connected to'));
+          // Linha info: checked sem cor própria
+          assert.equal(lines[1], 'info: checked 1 page, 1 script');
+          assert.equal(lines[1].includes('\x1b['), false);
+        } finally {
+          if (prevForceColor === undefined) {
+            delete process.env.FORCE_COLOR;
+          } else {
+            process.env.FORCE_COLOR = prevForceColor;
+          }
+        }
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12j. Next 16 redirect 307 com corpo RSC contendo NEXT_REDIRECT não aciona falso positivo de masked_error e mantém código 0', async () => {
+      const next16RedirectRscBody = `
+        <!DOCTYPE html>
+        <html>
+          <head><meta charset="utf-8"/></head>
+          <body>
+            <script>
+              self.__next_f.push([1,"1:{\\"type\\":\\"page\\",\\"pagePath\\":\\"src/app/page.tsx\\"}\\n2:{\\"name\\":\\"Error\\",\\"message\\":\\"NEXT_REDIRECT;replace;/login?next=/dashboard;307;\\"}\\n"]);
+            </script>
+          </body>
+        </html>
+      `;
+
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(307, {
+            'Content-Type': 'text/html; charset=utf-8',
+            Location: '/login?next=/dashboard',
+          });
+          res.end(next16RedirectRscBody);
+          return;
+        }
+        if (url.startsWith('/login')) {
+          // Segura a resposta simulando compilação lenta do dev server
+          setTimeout(() => {
+            if (!res.writableEnded) {
+              res.writeHead(200, { 'Content-Type': 'text/html' });
+              res.end('<html><body>Login Page</body></html>');
+            }
+          }, 300);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({
+          port: srv.port,
+          routeTimeoutMs: 100,
+        });
+
+        // Não pode acusar masked_error falso-positivo em 307!
+        assert.equal(res.ok, true, 'ok deve ser true mesmo com NEXT_REDIRECT no corpo 307');
+        const maskedIssues = res.issues.filter((i) => i.kind === 'masked_error');
+        assert.equal(maskedIssues.length, 0, 'Zero masked_error em 307 de redirect');
+
+        // Deve conter slow_route com destino limpo
+        const slowIssue = res.issues.find((i) => i.kind === 'slow_route' && i.route === '/');
+        assert.ok(slowIssue);
+        assert.ok(slowIssue.detail.includes('slow route / -> /login'));
+        assert.equal(slowIssue.detail.includes('?next='), false);
+
+        // Mensagem deve orientar re-execução sem erros
+        assert.ok(
+          res.message.includes(
+            'info: nothing was checked (/ did not respond in time); re-run after the dev server finishes compiling',
+          ),
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('12k. Teste negativo: erro 500 com overlay e runtime error continua sendo reportado como erro de sanidade', async () => {
+      const next16Real500 = `
+        <!DOCTYPE html>
+        <html>
+          <head><title>500 Internal Error</title></head>
+          <body>
+            <script>
+              self.__next_f.push([1,"1:{\\"type\\":\\"page\\",\\"pagePath\\":\\"src/app/page.tsx\\"}\\n2:{\\"name\\":\\"TypeError\\",\\"message\\":\\"Cannot read properties of undefined (reading 'auth')\\"}\\n"]);
+            </script>
+          </body>
+        </html>
+      `;
+
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(500, {
+            'Content-Type': 'text/html; charset=utf-8',
+          });
+          res.end(next16Real500);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        const httpError = res.issues.find((i) => i.kind === 'http_error');
+        assert.ok(httpError);
+        assert.ok(httpError.detail.includes("Cannot read properties of undefined (reading 'auth')"));
       } finally {
         await srv.close();
       }
