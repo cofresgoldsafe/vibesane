@@ -97,9 +97,9 @@ vibesane/
   - [x] Implementar varredura assíncrona rápida de portas padrão (3000, 3001, 5173, 5174, 8080, 8000, 4321).
   - [x] Adicionar fallback para porta customizada via flag (`--port 8000`).
 
-- [ ] **Task 3: Motor de Testes de Sanidade**
-  - Implementar checagem de status HTTP e headers.
-  - Implementar analisador de HTML básico para checagem de erros 500 mascarados e credenciais expostas.
+- [x] **Task 3: Motor de Testes de Sanidade**
+  - [x] Implementar checagem de status HTTP e headers.
+  - [x] Implementar analisador de HTML básico para checagem de erros 500 mascarados e credenciais expostas.
 
 - [ ] **Task 4: Gerador de Prompt para IA (AI Fix Formatter)**
   - Criar template de prompt determinístico contendo a rota, código HTTP retornado e instrução de correção para Cursor/Claude/Gemini.
