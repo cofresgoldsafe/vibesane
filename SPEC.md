@@ -70,10 +70,14 @@ vibesane/
 │   └── vibesane.js             # Ponto de entrada executável do npx
 ├── src/
 │   ├── cli.ts                  # Parsing de argumentos e orquestrador
+│   ├── rules/
+│   │   ├── exceptions.ts       # Listas e predicados de exceção (placeholders, chaves/prefixos públicos, módulos ignorados)
+│   │   ├── secrets.ts          # Catálogo declarativo SECRET_RULES, KNOWN_SECRET_PREFIXES derivado e funções de mascaramento
+│   │   └── masked-errors.ts    # Catálogo declarativo MASKED_ERROR_RULES e detectores de contexto Next.js/Vite
 │   ├── scanner/
 │   │   ├── port-detector.ts    # Auto-descoberta de servidores locais (3000, 5173, etc.)
 │   │   ├── route-crawler.ts    # Descoberta rápida de rotas no framework
-│   │   └── security-scan.ts    # Varredura de vazamento de credenciais e secrets
+│   │   └── security-scan.ts    # Motor de varredura (scanSecrets, detectMaskedError, sanitização e parsers estruturados)
 │   ├── reporter/
 │   │   ├── terminal-ui.ts      # Renderização visual limpa no terminal
 │   │   └── ai-prompt-gen.ts    # Gerador de prompt formatado para colar na IA
@@ -110,3 +114,7 @@ vibesane/
   - [x] Criar README com demonstração de saída em texto real (substituindo GIF por poda YAGNI), casos de cold start do Next.js, limitações e suporte a clipboard Windows/macOS.
   - [x] Preparar pacote npm (`v0.1.0`) validado via `npm pack --dry-run` (publicação no npm executada manualmente pelo mantenedor na `main` após o merge do PR).
   - [x] Consolidar documentação e memória arquitetural do lançamento.
+
+- [x] **Task 6: Separação Declarativa das Regras do Motor (`src/rules/`)**
+  - [x] Extrair regras de segredos (`src/rules/secrets.ts`), erros mascarados (`src/rules/masked-errors.ts`) e listas de exceção (`src/rules/exceptions.ts`) de `src/scanner/security-scan.ts` sem mudança de comportamento.
+  - [x] Derivar `KNOWN_SECRET_PREFIXES` de fonte única (`SECRET_RULES`) e validar exemplos embutidos (`shouldDetect`/`shouldIgnore`) automaticamente em `test/rules.test.mjs`.
