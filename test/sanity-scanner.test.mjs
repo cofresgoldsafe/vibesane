@@ -148,7 +148,8 @@ describe('Sanity Scanner Engine (BDD)', () => {
       const cliRes = await runCli(['--port', String(srv.port)]);
       assert.equal(cliRes.code, EXIT_CODES.SANITY_FAILURE);
       assert.equal(cliRes.code, 1);
-      assert.match(cliRes.stderr, /sanity check failed/);
+      assert.equal(cliRes.stderr, '');
+      assert.match(cliRes.stdout, /sanity check failed/);
     } finally {
       await srv.close();
     }

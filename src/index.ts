@@ -18,9 +18,16 @@ import {
 } from './scanner/port-detector.js';
 import {
   redactSecret,
+  redactPassword,
+  redactConnectionUri,
+  stripViteTimestampQuery,
+  resolveBundledSourceFile,
+  sanitizeSecretsInText,
+  sanitizeErrorSnippet,
+  extractViteErrorInfo,
+  extractNextErrorInfo,
   detectMaskedError,
   scanSecrets,
-  sanitizeErrorSnippet,
   type SanitySeverity,
   type SanityIssueKind,
   type SanityIssue,
@@ -44,6 +51,24 @@ import {
   type SanityScanOptions,
   type SanityScanSummary,
 } from './scanner/route-crawler.js';
+import {
+  AI_PROMPT_HEADER,
+  SECRET_LEAK_INSTRUCTION,
+  CODE_ERROR_INSTRUCTION,
+  MAX_PROMPT_ERRORS,
+  stripAnsiCodes,
+  generateAiFixPrompt,
+  type AiPromptIssue,
+  type AiPromptInput,
+} from './reporter/ai-prompt-gen.js';
+import {
+  shouldEnableColor,
+  formatTerminalReport,
+  type VibesaneReportInput,
+  type TerminalReportOptions,
+} from './reporter/terminal-ui.js';
+
+export type AiPromptIssueInput = AiPromptIssue;
 
 export {
   DEFAULT_PORTS,
@@ -63,9 +88,16 @@ export {
   type RootHttpSnapshot,
   type PortDetectionResult,
   redactSecret,
+  redactPassword,
+  redactConnectionUri,
+  stripViteTimestampQuery,
+  resolveBundledSourceFile,
+  sanitizeSecretsInText,
+  sanitizeErrorSnippet,
+  extractViteErrorInfo,
+  extractNextErrorInfo,
   detectMaskedError,
   scanSecrets,
-  sanitizeErrorSnippet,
   type SanitySeverity,
   type SanityIssueKind,
   type SanityIssue,
@@ -86,6 +118,18 @@ export {
   type RouteScanItem,
   type SanityScanOptions,
   type SanityScanSummary,
+  AI_PROMPT_HEADER,
+  SECRET_LEAK_INSTRUCTION,
+  CODE_ERROR_INSTRUCTION,
+  MAX_PROMPT_ERRORS,
+  stripAnsiCodes,
+  generateAiFixPrompt,
+  type AiPromptIssue,
+  type AiPromptInput,
+  shouldEnableColor,
+  formatTerminalReport,
+  type VibesaneReportInput,
+  type TerminalReportOptions,
 };
 
 export const EXIT_CODES = {
@@ -103,6 +147,7 @@ export interface VibesaneResult extends PortDetectionResult {
   scannedScripts: string[];
   skippedRoutes: string[];
   issues: SanityIssue[];
+  aiPrompt: string | null;
   message: string;
 }
 
@@ -138,6 +183,50 @@ function validateSanityScanOptions(options: SanityScanOptions): void {
   }
 }
 
+function formatScanMessage(
+  detection: PortDetectionResult,
+  ok: boolean,
+  errors: readonly SanityIssue[],
+  warnings: readonly SanityIssue[],
+  skippedRoutes: readonly string[],
+): string {
+  const alsoSuffix =
+    detection.alsoActivePorts.length > 0
+      ? ` (also active: ${detection.alsoActivePorts.join(', ')})`
+      : '';
+  const baseLine = `vibesane: connected to ${detection.url} (${detection.elapsedMs}ms)${alsoSuffix}`;
+
+  if (ok) {
+    const lines = [baseLine];
+    for (const w of warnings) {
+      lines.push(`warning [${w.kind}]: ${stripViteTimestampQuery(w.detail)}`);
+    }
+    if (skippedRoutes.length > 0) {
+      lines.push(
+        `info: ${skippedRoutes.length} route(s) not checked (time budget reached): ${skippedRoutes.join(', ')}`,
+      );
+    }
+    return lines.join('\n');
+  }
+
+  const lines = [
+    `vibesane: sanity check failed on ${detection.url} (${errors.length} error(s))`,
+  ];
+  for (const e of errors) {
+    const cleanDetail = stripViteTimestampQuery(e.detail);
+    lines.push(`error [${e.kind}]: ${cleanDetail}`);
+  }
+  for (const w of warnings) {
+    lines.push(`warning [${w.kind}]: ${stripViteTimestampQuery(w.detail)}`);
+  }
+  if (skippedRoutes.length > 0) {
+    lines.push(
+      `info: ${skippedRoutes.length} route(s) not checked (time budget reached): ${skippedRoutes.join(', ')}`,
+    );
+  }
+  return lines.join('\n');
+}
+
 export async function runVibesane(options: VibesaneOptions = {}): Promise<VibesaneResult> {
   validateSanityScanOptions(options);
   const detection = await detectServer(options);
@@ -164,6 +253,7 @@ export async function runVibesane(options: VibesaneOptions = {}): Promise<Vibesa
       scannedScripts: [],
       skippedRoutes: [],
       issues: [],
+      aiPrompt: null,
       message,
     };
   }
@@ -175,45 +265,22 @@ export async function runVibesane(options: VibesaneOptions = {}): Promise<Vibesa
     options,
   );
 
-  const errors = scan.issues.filter((i) => i.severity === 'error');
-  const warnings = scan.issues.filter((i) => i.severity === 'warning');
+  const normalizedIssues = scan.issues.map((issue) => ({
+    ...issue,
+    route: stripViteTimestampQuery(issue.route),
+  }));
+
+  const errors = normalizedIssues.filter((i) => i.severity === 'error');
+  const warnings = normalizedIssues.filter((i) => i.severity === 'warning');
   const ok = errors.length === 0;
 
-  const alsoSuffix =
-    detection.alsoActivePorts.length > 0
-      ? ` (also active: ${detection.alsoActivePorts.join(', ')})`
-      : '';
-  const baseLine = `vibesane: connected to ${detection.url} (${detection.elapsedMs}ms)${alsoSuffix}`;
-
-  let message: string;
-  if (ok) {
-    const lines = [baseLine];
-    for (const w of warnings) {
-      lines.push(`warning [${w.kind}]: ${w.detail}`);
-    }
-    if (scan.skippedRoutes.length > 0) {
-      lines.push(
-        `info: ${scan.skippedRoutes.length} route(s) not checked (time budget reached): ${scan.skippedRoutes.join(', ')}`,
-      );
-    }
-    message = lines.join('\n');
-  } else {
-    const lines = [
-      `vibesane: sanity check failed on ${detection.url} (${errors.length} error(s))`,
-    ];
-    for (const e of errors) {
-      lines.push(`error [${e.kind}]: ${e.detail}`);
-    }
-    for (const w of warnings) {
-      lines.push(`warning [${w.kind}]: ${w.detail}`);
-    }
-    if (scan.skippedRoutes.length > 0) {
-      lines.push(
-        `info: ${scan.skippedRoutes.length} route(s) not checked (time budget reached): ${scan.skippedRoutes.join(', ')}`,
-      );
-    }
-    message = lines.join('\n');
-  }
+  const message = formatScanMessage(detection, ok, errors, warnings, scan.skippedRoutes);
+  const aiPrompt = generateAiFixPrompt({
+    ok,
+    port: detection.port,
+    url: detection.url,
+    issues: normalizedIssues,
+  });
 
   return {
     ...detection,
@@ -221,7 +288,8 @@ export async function runVibesane(options: VibesaneOptions = {}): Promise<Vibesa
     routes: scan.routes,
     scannedScripts: scan.scannedScripts,
     skippedRoutes: scan.skippedRoutes,
-    issues: scan.issues,
+    issues: normalizedIssues,
+    aiPrompt,
     message,
   };
 }
