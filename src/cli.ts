@@ -94,6 +94,10 @@ export async function main(
   }
 
   const result = await runVibesane(portNum !== undefined ? { port: portNum } : {});
-  stdout(result.message);
-  return result.ok ? EXIT_CODES.OK : EXIT_CODES.SANITY_FAILURE;
+  if (result.ok) {
+    stdout(result.message);
+    return EXIT_CODES.OK;
+  }
+  stderr(result.message);
+  return EXIT_CODES.SANITY_FAILURE;
 }

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { main } from '../dist/cli.js';
 import { runVibesane, EXIT_CODES } from '../dist/index.js';
 
@@ -25,31 +26,50 @@ async function runCli(argv) {
   };
 }
 
-describe('vibesane CLI & Programmatic API (BDD)', () => {
-  it('execução padrão sem flags retorna 0 e exibe scanner stub (port: auto)', async () => {
-    const res = await runCli([]);
-    assert.equal(res.code, EXIT_CODES.OK);
-    assert.equal(res.code, 0);
-    assert.match(res.stdout, /vibesane: scanner stub \(port: auto\)/);
-    assert.equal(res.stderr, '');
+/**
+ * Starts an ephemeral HTTP server on 127.0.0.1.
+ * @returns {Promise<{ server: import('node:http').Server, port: number, close: () => Promise<void> }>}
+ */
+function startEphemeralHttpServer() {
+  return new Promise((resolve, reject) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html><body>ok</body></html>');
+    });
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      resolve({
+        server,
+        port,
+        close: () =>
+          new Promise((resClose) => {
+            server.closeAllConnections?.();
+            server.close(() => resClose());
+          }),
+      });
+    });
   });
+}
 
-  it('runVibesane programático exporta EXIT_CODES e executa com e sem porta', async () => {
+describe('vibesane CLI & Programmatic API (BDD)', () => {
+  it('runVibesane programático exporta EXIT_CODES, conecta a servidor ativo e valida faixas de porta', async () => {
     assert.deepEqual(EXIT_CODES, { OK: 0, SANITY_FAILURE: 1, USAGE_ERROR: 2 });
 
-    const resAuto = await runVibesane();
-    assert.deepEqual(resAuto, {
-      ok: true,
-      port: 'auto',
-      message: 'vibesane: scanner stub (port: auto)',
-    });
-
-    const resPort = await runVibesane({ port: 4000 });
-    assert.deepEqual(resPort, {
-      ok: true,
-      port: 4000,
-      message: 'vibesane: scanner stub (port: 4000)',
-    });
+    const srv = await startEphemeralHttpServer();
+    try {
+      const resPort = await runVibesane({ port: srv.port });
+      assert.equal(resPort.ok, true);
+      assert.equal(resPort.port, srv.port);
+      assert.equal(resPort.url, `http://localhost:${srv.port}`);
+      assert.match(
+        resPort.message,
+        /^vibesane: connected to http:\/\/localhost:\d+ \(\d+ms\)$/,
+      );
+    } finally {
+      await srv.close();
+    }
 
     await assert.rejects(() => runVibesane({ port: -1 }), RangeError);
     await assert.rejects(() => runVibesane({ port: 70000 }), RangeError);
@@ -57,22 +77,52 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
   });
 
   describe('porta válida (--port, -p, --port=<val> e limites 1..65535)', () => {
-    const validCases = [
-      { argv: ['--port', '8000'], expectedPort: 8000 },
-      { argv: ['-p', '3000'], expectedPort: 3000 },
-      { argv: ['--port=5173'], expectedPort: 5173 },
-      { argv: ['--port', '1'], expectedPort: 1 },
-      { argv: ['--port', '65535'], expectedPort: 65535 },
-    ];
+    it('aceita --port <port>, -p <port> e --port=<port> conectando a servidor HTTP ativo', async () => {
+      const srv = await startEphemeralHttpServer();
+      try {
+        const portStr = String(srv.port);
+        const flagVariants = [
+          ['--port', portStr],
+          ['-p', portStr],
+          [`--port=${portStr}`],
+        ];
 
-    for (const { argv, expectedPort } of validCases) {
-      it(`aceita ${argv.join(' ')} -> port: ${expectedPort}`, async () => {
-        const res = await runCli(argv);
-        assert.equal(res.code, 0);
-        assert.match(res.stdout, new RegExp(`vibesane: scanner stub \\(port: ${expectedPort}\\)`));
-        assert.equal(res.stderr, '');
-      });
-    }
+        for (const argv of flagVariants) {
+          const res = await runCli(argv);
+          assert.equal(res.code, EXIT_CODES.OK);
+          assert.equal(res.code, 0);
+          assert.equal(res.stderr, '');
+          assert.match(
+            res.stdout,
+            /^vibesane: connected to http:\/\/localhost:\d+ \(\d+ms\)$/,
+          );
+        }
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('main(["--port", "<closedPort>"]) retorna EXIT_CODES.SANITY_FAILURE (1) e erro em stderr', async () => {
+      const srv = await startEphemeralHttpServer();
+      const closedPort = srv.port;
+      await srv.close();
+
+      const res = await runCli(['--port', String(closedPort)]);
+      assert.equal(res.code, EXIT_CODES.SANITY_FAILURE);
+      assert.equal(res.code, 1);
+      assert.equal(res.stdout, '');
+      assert.ok(
+        res.stderr.includes(`vibesane: no active server found on port ${closedPort}`),
+        `stderr inesperado: ${res.stderr}`,
+      );
+    });
+
+    it('aceita limites de faixa 1 e 65535 sem erro de uso (código !== 2)', async () => {
+      for (const boundary of ['1', '65535']) {
+        const res = await runCli(['--port', boundary]);
+        assert.notEqual(res.code, EXIT_CODES.USAGE_ERROR);
+      }
+    });
   });
 
   describe('flags informativas (--help, -h, --version, -v)', () => {

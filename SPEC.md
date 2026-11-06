@@ -26,7 +26,7 @@ Sem arquivos de configuração. Ela detecta automaticamente o servidor local em 
 ### Caso 1: Detecção Automática de Ambiente Local
 - **Dado** que o desenvolvedor possui um servidor web rodando localmente (Next.js, Vite, Remix, Fastify, Express, etc.),
 - **Quando** ele executa `npx vibesane`,
-- **Então** a ferramenta deve inspecionar as portas locais mais comuns (3000, 5173, 8080, 8000, 4321), identificar a porta ativa e confirmar a conexão em menos de 500ms, sem exigir parâmetro de URL.
+- **Então** a ferramenta deve inspecionar as portas locais mais comuns (3000, 3001, 5173, 5174, 8080, 8000, 4321), identificar a porta ativa e confirmar a conexão em menos de 500ms, sem exigir parâmetro de URL.
 
 ### Caso 2: Varredura de Sanidade Rápida (Preflight Checks)
 - **Dado** que o servidor local está respondendo,
@@ -93,9 +93,9 @@ vibesane/
   - [x] Configurar TypeScript com build leve via `tsc` (ESM `NodeNext`).
   - [x] Definir scripts de build, suíte de testes `node:test` e CI multiplataforma.
 
-- [ ] **Task 2: Detector de Portas e Servidores Locais**
-  - Implementar varredura assíncrona rápida de portas padrão (3000, 5173, 8080, etc.).
-  - Adicionar fallback para porta customizada via flag (`--port 8000`).
+- [x] **Task 2: Detector de Portas e Servidores Locais**
+  - [x] Implementar varredura assíncrona rápida de portas padrão (3000, 3001, 5173, 5174, 8080, 8000, 4321).
+  - [x] Adicionar fallback para porta customizada via flag (`--port 8000`).
 
 - [ ] **Task 3: Motor de Testes de Sanidade**
   - Implementar checagem de status HTTP e headers.

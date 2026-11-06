@@ -1,3 +1,31 @@
+import {
+  DEFAULT_PORTS,
+  DEFAULT_TCP_TIMEOUT_MS,
+  DEFAULT_HTTP_TIMEOUT_MS,
+  assertValidPort,
+  probeTcpPort,
+  detectServer,
+  type LoopbackHost,
+  type DetectionFailureReason,
+  type PortDetectorOptions,
+  type TcpProbeResult,
+  type PortDetectionResult,
+} from './scanner/port-detector.js';
+
+export {
+  DEFAULT_PORTS,
+  DEFAULT_TCP_TIMEOUT_MS,
+  DEFAULT_HTTP_TIMEOUT_MS,
+  assertValidPort,
+  probeTcpPort,
+  detectServer,
+  type LoopbackHost,
+  type DetectionFailureReason,
+  type PortDetectorOptions,
+  type TcpProbeResult,
+  type PortDetectionResult,
+};
+
 export const EXIT_CODES = {
   OK: 0,
   SANITY_FAILURE: 1,
@@ -6,26 +34,38 @@ export const EXIT_CODES = {
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
 
-export interface VibesaneOptions {
-  port?: number;
-}
+export type VibesaneOptions = PortDetectorOptions;
 
-export interface VibesaneResult {
-  ok: boolean;
-  port: number | 'auto';
+export interface VibesaneResult extends PortDetectionResult {
   message: string;
 }
 
 export async function runVibesane(options: VibesaneOptions = {}): Promise<VibesaneResult> {
-  if (options.port !== undefined) {
-    if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
-      throw new RangeError(`Invalid port "${options.port}": expected integer between 1 and 65535`);
+  const detection = await detectServer(options);
+  let message: string;
+
+  if (detection.ok) {
+    const alsoSuffix =
+      detection.alsoActivePorts.length > 0
+        ? ` (also active: ${detection.alsoActivePorts.join(', ')})`
+        : '';
+    message = `vibesane: connected to ${detection.url} (${detection.elapsedMs}ms)${alsoSuffix}`;
+  } else if (detection.reason === 'http_timeout') {
+    const httpTimeoutMs = options.httpTimeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
+    const label = httpTimeoutMs % 1000 === 0 ? `${httpTimeoutMs / 1000}s` : `${httpTimeoutMs}ms`;
+    message = `vibesane: port ${detection.port} accepted the connection but took >${label} to respond (still compiling?)`;
+  } else if (detection.reason === 'non_http') {
+    message = `vibesane: port ${detection.port} is open but did not respond to HTTP`;
+  } else {
+    if (detection.checkedPorts.length === 1) {
+      message = `vibesane: no active server found on port ${detection.checkedPorts[0]}`;
+    } else {
+      message = `vibesane: no active server found on ports ${detection.checkedPorts.join(', ')}`;
     }
   }
-  const port = options.port ?? 'auto';
+
   return {
-    ok: true,
-    port,
-    message: `vibesane: scanner stub (port: ${port})`,
+    ...detection,
+    message,
   };
 }
