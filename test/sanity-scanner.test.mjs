@@ -12,6 +12,7 @@ import {
   selectScriptsToFetch,
   formatTerminalReport,
 } from '../dist/index.js';
+import { scanServerEnv } from '../dist/scanner/security-scan.js';
 
 /**
  * Starts an ephemeral HTTP server on 127.0.0.1.
@@ -1726,6 +1727,154 @@ describe('Sanity Scanner Engine (BDD)', () => {
         assert.equal(res.ok, true);
         assert.equal(reqCount, 1);
         assert.ok(res.message.includes('info: checked 1 page, 1 script'));
+      } finally {
+        await srv.close();
+      }
+    });
+  });
+
+  describe('14. Detecção de Variáveis de Servidor no Cliente (server_env_in_client)', () => {
+    it('14a. Next 16 Turbopack (formato real): chunk com __TURBOPACK__imported__module__...__["default"].env.SUPABASE_SERVICE_ROLE_KEY em modulo de aplicacao', () => {
+      const turbopackChunk = [
+        '(globalThis.TURBOPACK = globalThis.TURBOPACK || []).push([',
+        '  "static/chunks/app_page_tsx_619946._.js",',
+        '  {',
+        '    "[project]/src/lib/admin.ts [app-client] (ecmascript)": ((__turbopack_context__) => {',
+        '      "use strict";',
+        '      const key = ((0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$build$2f$polyfills$2f$process$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["default"]).env.SUPABASE_SERVICE_ROLE_KEY);',
+        '      return key;',
+        '    }),',
+        '  }',
+        ']);',
+      ].join('\n');
+
+      const issues = scanServerEnv(turbopackChunk, '/_next/static/chunks/app.js');
+      assert.equal(issues.length, 1);
+      assert.equal(issues[0].kind, 'server_env_in_client');
+      assert.equal(issues[0].severity, 'error');
+      assert.equal(issues[0].route, 'src/lib/admin.ts');
+      assert.equal(
+        issues[0].detail,
+        'Server environment variable SUPABASE_SERVICE_ROLE_KEY referenced in client code on src/lib/admin.ts',
+      );
+      assert.equal(issues[0].maskedSnippet, 'SUPABASE_SERVICE_ROLE_KEY');
+    });
+
+    it('14b. Next 16 Webpack real: dev eval com process.env.X e producao com r(357).env.X', () => {
+      const webpackDevEval = [
+        '/***/ "(app-pages-browser)/./src/lib/supabase/config.ts":',
+        '/***/ (function(__unused_webpack_module, __webpack_exports__, __webpack_require__) {',
+        'eval("const chave = sanitizarToken(process.env.SUPABASE_SERVICE_ROLE_KEY);\\n");',
+        '/***/ }),',
+      ].join('\n');
+
+      const issuesDev = scanServerEnv(webpackDevEval, '/_next/static/chunks/app.js');
+      assert.equal(issuesDev.length, 1);
+      assert.equal(issuesDev[0].kind, 'server_env_in_client');
+      assert.equal(issuesDev[0].route, 'src/lib/supabase/config.ts');
+      assert.equal(issuesDev[0].maskedSnippet, 'SUPABASE_SERVICE_ROLE_KEY');
+
+      const webpackProd = [
+        '/***/ "(app-pages-browser)/./src/lib/supabase/config.ts":',
+        '/***/ (function(module, exports, r) {',
+        'const chave = (0, r(357).env.SUPABASE_SERVICE_ROLE_KEY);',
+        '/***/ }),',
+      ].join('\n');
+
+      const issuesProd = scanServerEnv(webpackProd, '/_next/static/chunks/app.js');
+      assert.equal(issuesProd.length, 1);
+      assert.equal(issuesProd[0].kind, 'server_env_in_client');
+      assert.equal(issuesProd[0].route, 'src/lib/supabase/config.ts');
+      assert.equal(issuesProd[0].maskedSnippet, 'SUPABASE_SERVICE_ROLE_KEY');
+    });
+
+    it('14c. Third-party ignore: JSDoc contendo SUPABASE_SECRET_KEY em node_modules/@supabase/auth-js e descartado', () => {
+      const chunkWithThirdParty = [
+        '/***/ "(app-pages-browser)/./node_modules/@supabase/auth-js/dist/module/GoTrueAdminApi.js":',
+        '/***/ (function(__unused_webpack_module, __webpack_exports__, __webpack_require__) {',
+        '/**',
+        ' * headers: { Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}` }',
+        ' */',
+        'class GoTrueAdminApi {}',
+        '/***/ }),',
+      ].join('\n');
+
+      const issues = scanServerEnv(chunkWithThirdParty, '/_next/static/chunks/app.js');
+      assert.equal(issues.length, 0, 'Third party module in node_modules must be ignored');
+    });
+
+    it('14d. Vite: import.meta.env.DATABASE_URL apita e import.meta.env.VITE_SUPABASE_URL e limpo', () => {
+      const viteCode = [
+        'const dbUrl = import.meta.env.DATABASE_URL;',
+        'const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;',
+      ].join('\n');
+
+      const issues = scanServerEnv(viteCode, '/src/components/Checkout.tsx');
+      assert.equal(issues.length, 1);
+      assert.equal(issues[0].kind, 'server_env_in_client');
+      assert.equal(issues[0].route, '/src/components/Checkout.tsx');
+      assert.equal(
+        issues[0].detail,
+        'Server environment variable DATABASE_URL referenced in client code on /src/components/Checkout.tsx',
+      );
+      assert.equal(issues[0].maskedSnippet, 'DATABASE_URL');
+    });
+
+    it('14e. Deduplicacao por (arquivo, variavel): repeticoes da mesma variavel geram 1 issue', () => {
+      const code = [
+        'const a = process.env.SUPABASE_SERVICE_ROLE_KEY;',
+        'const b = process.env.SUPABASE_SERVICE_ROLE_KEY;',
+        'const c = process.env.SUPABASE_SERVICE_ROLE_KEY;',
+        'const d = process.env.DATABASE_URL;',
+      ].join('\n');
+
+      const issues = scanServerEnv(code, '/src/lib/admin.ts');
+      assert.equal(issues.length, 2, 'Must yield exactly 2 issues: 1 for SUPABASE_SERVICE_ROLE_KEY and 1 for DATABASE_URL');
+      assert.equal(issues[0].maskedSnippet, 'SUPABASE_SERVICE_ROLE_KEY');
+      assert.equal(issues[1].maskedSnippet, 'DATABASE_URL');
+    });
+
+    it('14f. Integracao end-to-end com servidor local e crawler: reporta erro e gera AI FIX PROMPT', async () => {
+      const html = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <script type="module" src="/src/admin-leak.js"></script>
+          </head>
+          <body><h1>Home</h1></body>
+        </html>
+      `;
+      const script = 'export const admin = { key: process.env.SUPABASE_SERVICE_ROLE_KEY };';
+
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(html);
+          return;
+        }
+        if (url === '/src/admin-leak.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end(script);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        const serverEnvIssues = res.issues.filter((i) => i.kind === 'server_env_in_client');
+        assert.equal(serverEnvIssues.length, 1);
+        assert.equal(serverEnvIssues[0].route, '/src/admin-leak.js');
+        assert.equal(serverEnvIssues[0].maskedSnippet, 'SUPABASE_SERVICE_ROLE_KEY');
+
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, EXIT_CODES.SANITY_FAILURE);
+        assert.equal(cliRes.code, 1);
+        assert.ok(cliRes.stdout.includes('error [server_env_in_client]'));
+        assert.ok(cliRes.stdout.includes('Instruction: Move code that accesses server environment variables'));
       } finally {
         await srv.close();
       }
