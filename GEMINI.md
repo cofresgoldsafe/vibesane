@@ -1,14 +1,21 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-07)
-- **Versão atual no package.json:** `0.1.7` (publicada no npm e GitHub Release `v0.1.7`)
-- **Branch:** `main`
+- **Versão atual no package.json:** `0.1.7` (em desenvolvimento na branch `fix/api-root-404-json` para v0.1.8)
+- **Branch:** `fix/api-root-404-json`
 - **Última tarefa concluída:** **Release v0.1.7 (Detecção de Variáveis de Servidor no Cliente — `server_env_in_client`)** — Regra implementada em `src/rules/server-env.ts` com ancoragem em `\.env`, eliminando tempo quadrático em sourcemaps base64 (2 MB em 0,85 ms). Cobertura universal de bundlers: Turbopack (`__["default"].env.X`), Webpack (`eval` e `r(357).env.X`) e Vite 8 (`import.meta.env.X`), com resolução de fronteira de módulo (`findModuleBoundary`), descarte de third-party (`node_modules`), deduplicação por `(targetRoute, varName)` e AI FIX PROMPT específico. 172/172 testes passando, Red Team real validado, PR #15 mergeado e release v0.1.7 publicada oficialmente.
-- **Próxima tarefa:** Monitoramento de adoção da v0.1.7 e backlog de novas regras.
+- **Tarefa em andamento:** **Tratamento de Raiz 404 JSON para Servidores de API (v0.1.8)** — Raiz respondendo status 404 final com `Content-Type: *json*` tratada como `warning [http_error]` (exit code 0, sem AI FIX PROMPT).
 
 ---
 
 ## Decisões Arquiteturais Travadas
+- **Tratamento de Raiz 404 JSON para Servidores de API (`src/scanner/route-crawler.ts`):**
+  - Quando a rota raiz `/` responde com status final exatamente `404` e cabeçalho `Content-Type` contendo `json` (ex.: `application/json`, `application/problem+json`), o vibesane emite `kind: 'http_error'` com `severity: 'warning'` e detalhe `/ returned 404 JSON; looks like an API-only server, nothing to check at /`.
+  - O código de saída permanece `0` (`EXIT_CODES.OK`) e `aiPrompt` permanece `null`.
+  - O contrato `SanityIssueKind` permanece 100% inalterado (reuso de `http_error` com `severity: 'warning'`).
+  - Todos os demais casos negativos (404 com HTML, 500 JSON, 401/403/405 JSON e sub-rotas 404 JSON) continuam emitindo `severity: 'error'` com exit code `1` e `AI FIX PROMPT`.
+  - A varredura de segredos no corpo do JSON da raiz e a checagem paralela de arquivos expostos (`/.env`, `/.git/config`) continuam normalmente ativas.
+  - A linha de cobertura em `src/index.ts` permanece inalterada, reportando `info: checked 1 page, 0 scripts` de acordo com a regra uniforme de contagem (`statusCode < 300 || statusCode >= 400`).
 - **Detecção de Variáveis de Servidor no Cliente (`server_env_in_client`):**
   - Kind: `server_env_in_client`, severidade `error`, exit code `1`.
   - Regex ancorada em `\.env`: `/\.env(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[\\?["']([A-Za-z_][A-Za-z0-9_]*)\\?["']\])/g`. A remoção de prefixos literais como `[A-Za-z0-9_$]+` antes de `.env` foi indispensável porque: (1) chunks com sourcemaps em base64 inline no Webpack dev possuem > 1,3 MB de caracteres contínuos que causavam travamento síncrono quadrático na engine de regex do V8, e (2) no Turbopack do Next 16 o polyfill de process injeta colchetes e aspas antes do ponto (`__["default"].env.X`). A ancoragem em `\.env` executa em tempo O(n) estrito (< 1 ms em 2 MB) e captura todos os bundlers sem depender do identificador precedente.

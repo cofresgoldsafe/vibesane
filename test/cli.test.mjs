@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { main } from '../dist/cli.js';
@@ -237,6 +238,53 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
         encoding: 'utf8',
       });
       assert.equal(output, `${pkg.version}\n`);
+    });
+
+    it('execução do binário bin/vibesane.js contra servidor com raiz 404 JSON retorna exit code 0, warning [http_error] e sem AI FIX PROMPT', async () => {
+      const srv = await new Promise((resolve, reject) => {
+        const server = createServer((_req, res) => {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ detail: 'Not Found' }));
+        });
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          const addr = server.address();
+          const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+          resolve({
+            server,
+            port,
+            close: () =>
+              new Promise((resClose) => {
+                server.closeAllConnections?.();
+                server.close(() => resClose());
+              }),
+          });
+        });
+      });
+
+      try {
+        const execFileAsync = promisify(execFile);
+        const { stdout } = await execFileAsync(
+          process.execPath,
+          ['bin/vibesane.js', '--port', String(srv.port)],
+          { encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } },
+        );
+
+        assert.ok(
+          stdout.includes('warning [http_error]: / returned 404 JSON; looks like an API-only server, nothing to check at /'),
+          'Deve exibir o aviso de API-only server',
+        );
+        assert.ok(
+          stdout.includes('info: checked 1 page, 0 scripts'),
+          'Deve exibir linha de cobertura consistente',
+        );
+        assert.ok(
+          !stdout.includes('AI FIX PROMPT'),
+          'Não deve exibir AI FIX PROMPT',
+        );
+      } finally {
+        await srv.close();
+      }
     });
 
     it('bin/vibesane.js possui quebras de linha LF e shebang válido', () => {
