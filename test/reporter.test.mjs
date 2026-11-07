@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import { createServer } from 'node:http';
 import { main } from '../dist/cli.js';
 import { toAsciiSafe } from '../dist/text/ascii.js';
-import { detailContainsRoute } from '../dist/reporter/ai-prompt-gen.js';
+import {
+  detailContainsRoute,
+  SERVER_ENV_IN_CLIENT_INSTRUCTION,
+} from '../dist/reporter/ai-prompt-gen.js';
 import {
   runVibesane,
   EXIT_CODES,
@@ -1144,5 +1147,79 @@ describe('v0.1.2 - Mascaramento de URIs de banco no codeFrame e mensagens de err
     assert.ok(mixedPrompt);
     assert.ok(mixedPrompt.includes('[secret_leak]'));
     assert.equal(mixedPrompt.includes('truncated_body'), false, 'Não deve conter truncated_body no prompt da IA');
+  });
+
+  it('16. ai-prompt-gen: server_env_in_client isolado emite Instruction única sem prefixo', () => {
+    const input = {
+      port: 3000,
+      url: 'http://localhost:3000',
+      issues: [
+        {
+          kind: 'server_env_in_client',
+          severity: 'error',
+          route: 'src/lib/admin.ts',
+          detail: 'Server environment variable SUPABASE_SERVICE_ROLE_KEY referenced in client code on src/lib/admin.ts',
+          maskedSnippet: 'SUPABASE_SERVICE_ROLE_KEY',
+        },
+      ],
+    };
+
+    const prompt = generateAiFixPrompt(input);
+    assert.ok(prompt);
+    assert.ok(prompt.includes('[server_env_in_client]'));
+    assert.ok(prompt.includes(`Instruction: ${SERVER_ENV_IN_CLIENT_INSTRUCTION}`));
+    assert.equal(prompt.includes('Instruction (server env in client):'), false);
+  });
+
+  it('17. ai-prompt-gen: server_env_in_client combinado com secrets, exposed files e code emite categorias ordenadas', () => {
+    const fakeKey = ['sk', 'live', 'abcdefghijklmnopqrstuvwx'].join('_');
+    const input = {
+      port: 3000,
+      url: 'http://localhost:3000',
+      issues: [
+        {
+          kind: 'secret_leak',
+          severity: 'error',
+          route: '/app.js',
+          detail: `Secret leak on /app.js: Stripe secret key (${fakeKey})`,
+        },
+        {
+          kind: 'server_env_in_client',
+          severity: 'error',
+          route: 'src/lib/admin.ts',
+          detail: 'Server environment variable SUPABASE_SERVICE_ROLE_KEY referenced in client code on src/lib/admin.ts',
+          maskedSnippet: 'SUPABASE_SERVICE_ROLE_KEY',
+        },
+        {
+          kind: 'exposed_file',
+          severity: 'error',
+          route: '/.env',
+          detail: 'Server exposes /.env (variables: DB_HOST, DB_USER)',
+        },
+        {
+          kind: 'syntax_error',
+          severity: 'error',
+          route: '/src/broken.js',
+          detail: 'Syntax error on /src/broken.js: Unexpected token',
+        },
+      ],
+    };
+
+    const prompt = generateAiFixPrompt(input);
+    assert.ok(prompt);
+    assert.ok(prompt.includes('Instruction (secrets):'));
+    assert.ok(prompt.includes('Instruction (server env in client):'));
+    assert.ok(prompt.includes('Instruction (exposed files):'));
+    assert.ok(prompt.includes('Instruction (code):'));
+
+    const idxSecrets = prompt.indexOf('Instruction (secrets):');
+    const idxServerEnv = prompt.indexOf('Instruction (server env in client):');
+    const idxExposed = prompt.indexOf('Instruction (exposed files):');
+    const idxCode = prompt.indexOf('Instruction (code):');
+
+    assert.ok(idxSecrets !== -1 && idxServerEnv !== -1 && idxExposed !== -1 && idxCode !== -1);
+    assert.ok(idxSecrets < idxServerEnv, 'Instruction (secrets) deve vir antes de (server env in client)');
+    assert.ok(idxServerEnv < idxExposed, 'Instruction (server env in client) deve vir antes de (exposed files)');
+    assert.ok(idxExposed < idxCode, 'Instruction (exposed files) deve vir antes de (code)');
   });
 });

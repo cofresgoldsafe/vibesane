@@ -12,6 +12,9 @@ export const AI_PROMPT_HEADER =
 export const SECRET_LEAK_INSTRUCTION =
   'Move this key to a server-only environment variable (never NEXT_PUBLIC_ / VITE_) and rotate it if it was ever committed or deployed.';
 
+export const SERVER_ENV_IN_CLIENT_INSTRUCTION =
+  'Move code that accesses server environment variables to a server-only file (in Next.js, add import "server-only") and do not import that file into browser/client components.';
+
 export const EXPOSED_FILE_INSTRUCTION =
   "Do not serve the project root as static files: serve only a dedicated public folder (e.g. express.static('public')), and rotate every key that was in the exposed file.";
 
@@ -138,6 +141,9 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
   }
 
   const hasSecretLeak = uniqueErrors.some((err) => err.kind === 'secret_leak');
+  const hasServerEnvInClient = uniqueErrors.some(
+    (err) => err.kind === 'server_env_in_client',
+  );
   const hasExposedFile = uniqueErrors.some((err) => err.kind === 'exposed_file');
   const hasCodeError = uniqueErrors.some(
     (err) =>
@@ -148,12 +154,15 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
 
   const activeCategoriesCount =
     (hasSecretLeak ? 1 : 0) +
+    (hasServerEnvInClient ? 1 : 0) +
     (hasExposedFile ? 1 : 0) +
     (hasCodeError ? 1 : 0);
 
   if (activeCategoriesCount === 1) {
     if (hasSecretLeak) {
       lines.push(`Instruction: ${SECRET_LEAK_INSTRUCTION}`);
+    } else if (hasServerEnvInClient) {
+      lines.push(`Instruction: ${SERVER_ENV_IN_CLIENT_INSTRUCTION}`);
     } else if (hasExposedFile) {
       lines.push(`Instruction: ${EXPOSED_FILE_INSTRUCTION}`);
     } else if (hasCodeError) {
@@ -162,6 +171,11 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
   } else if (activeCategoriesCount > 1) {
     if (hasSecretLeak) {
       lines.push(`Instruction (secrets): ${SECRET_LEAK_INSTRUCTION}`);
+    }
+    if (hasServerEnvInClient) {
+      lines.push(
+        `Instruction (server env in client): ${SERVER_ENV_IN_CLIENT_INSTRUCTION}`,
+      );
     }
     if (hasExposedFile) {
       lines.push(`Instruction (exposed files): ${EXPOSED_FILE_INSTRUCTION}`);

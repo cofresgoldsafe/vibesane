@@ -117,6 +117,7 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 
 - **No Headless Browser (Not Playwright/Cypress):** Runs fast HTTP/HTML/JS inspection via `fetch`. It does not execute client-side JavaScript, click buttons, submit forms, or detect crashes that only trigger after DOM user interaction.
 - **Compile-Time vs Runtime Errors:** Performs syntax check (compile only, never executed). Runtime-only errors (e.g. reassigning a const inside a click handler) are not detected.
+- **Server Environment References in Client Strings:** Detects `.env.VAR_NAME` statically via regex in client bundles. Literal strings or user-facing error messages containing such patterns (e.g. `"check your process.env.DATABASE_URL"`) in client components will also trigger `server_env_in_client`.
 - **HTML-Based Route Discovery:** Discovers sub-routes from `<a href="...">` links rendered in the HTML of `/`. In pure client-side SPAs where `<div id="root"></div>` is empty and routes exist only inside a client-side router, `vibesane` inspects `/` and up to 5 application JS modules (`/src/*`), but does not navigate client-only routes absent from initial HTML.
 - **No Authentication / Session State:** Protected routes redirecting to external login providers are skipped; same-origin redirects are followed up to 3 hops.
 - **Deterministic Caps:** Enforces a `2.5s` global crawl budget, up to `10` routes, `5` scripts, `1 MB` per HTML page, and `8 MB` per script.
@@ -136,7 +137,7 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 | Code | Meaning |
 | :--- | :--- |
 | `0` | All sanity checks passed (including non-fatal warnings) |
-| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`, `syntax_error`, `exposed_file`) or no local HTTP server found |
+| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`, `server_env_in_client`, `syntax_error`, `exposed_file`) or no local HTTP server found |
 | `2` | CLI usage error (invalid flag or invalid `--port` value) |
 
 ## License

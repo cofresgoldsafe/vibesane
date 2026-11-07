@@ -6,6 +6,10 @@ import {
   isPublicStripeKey,
 } from '../rules/exceptions.js';
 import {
+  SERVER_ENV_ACCESS_RE,
+  isServerEnvVarName,
+} from '../rules/server-env.js';
+import {
   SECRET_RULES,
   PEM_PRIVATE_KEY_RE,
   EXTRA_TOKENS_RE,
@@ -27,6 +31,7 @@ export type SanityIssueKind =
   | 'http_error'
   | 'masked_error'
   | 'secret_leak'
+  | 'server_env_in_client'
   | 'slow_route'
   | 'syntax_error'
   | 'truncated_body';
@@ -238,6 +243,48 @@ export function scanSecrets(content: string, route: string): SanityIssue[] {
       const customMasked = rule.mask ? rule.mask(rawSecret) : undefined;
       pushIssue(resolvedLabel, rawSecret, targetRoute, customMasked);
     }
+  }
+
+  return issues;
+}
+
+export function scanServerEnv(content: string, route: string): SanityIssue[] {
+  if (!content) {
+    return [];
+  }
+
+  const issues: SanityIssue[] = [];
+  const seen = new Set<string>();
+  const boundaries = extractModuleBoundaries(content);
+
+  SERVER_ENV_ACCESS_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SERVER_ENV_ACCESS_RE.exec(content)) !== null) {
+    const varName = match[1] || match[2] || '';
+    if (!isServerEnvVarName(varName)) {
+      continue;
+    }
+
+    const boundary = findModuleBoundary(boundaries, match.index);
+    if (boundary?.isThirdParty) {
+      continue;
+    }
+
+    const targetRoute =
+      boundary && !boundary.isThirdParty ? boundary.path : route;
+    const dedupeKey = `${targetRoute}::${varName}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+
+    issues.push({
+      kind: 'server_env_in_client',
+      severity: 'error',
+      route: targetRoute,
+      detail: `Server environment variable ${varName} referenced in client code on ${targetRoute}`,
+      maskedSnippet: varName,
+    });
   }
 
   return issues;

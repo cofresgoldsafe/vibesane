@@ -15,6 +15,7 @@ import {
   extractNextErrorInfo,
   extractViteErrorInfo,
   scanSecrets,
+  scanServerEnv,
   sanitizeErrorSnippet,
   stripViteTimestampQuery,
   type SanityIssue,
@@ -1075,6 +1076,7 @@ export async function runSanityScan(
 
           if (snap.body.length > 0) {
             issues.push(...scanSecrets(snap.body, cleanScriptPath));
+            issues.push(...scanServerEnv(snap.body, cleanScriptPath));
           }
 
           if (

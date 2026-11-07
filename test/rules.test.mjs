@@ -20,9 +20,15 @@ import {
 import { MASKED_ERROR_RULES } from '../dist/rules/masked-errors.js';
 import {
   scanSecrets,
+  scanServerEnv,
   detectMaskedError,
   sanitizeSecretsInText,
 } from '../dist/scanner/security-scan.js';
+import {
+  SERVER_ENV_ACCESS_RE,
+  isServerEnvVarName,
+  SERVER_ENV_RULE_EXAMPLES,
+} from '../dist/rules/server-env.js';
 
 describe('declarative catalog contract (SECRET_RULES & MASKED_ERROR_RULES)', () => {
   it('enforces unique rule IDs across SECRET_RULES and MASKED_ERROR_RULES', () => {
@@ -380,5 +386,56 @@ describe('Supabase keys detection (service_role JWT & sb_secret_) — v0.1.6', (
     assert.equal(issues.length, 1);
     assert.equal(issues[0].kind, 'secret_leak');
     assert.match(issues[0].detail, /APP_SIGNING_SECRET/);
+  });
+});
+
+describe('server-env rule & performance test (server_env_in_client)', () => {
+  it('enforces global flag and forbids sticky flag on SERVER_ENV_ACCESS_RE', () => {
+    assert.equal(SERVER_ENV_ACCESS_RE.global, true);
+    assert.equal(SERVER_ENV_ACCESS_RE.sticky, false);
+  });
+
+  it('validates isServerEnvVarName against shouldDetect and shouldIgnore examples', () => {
+    for (const snippet of SERVER_ENV_RULE_EXAMPLES.shouldDetect) {
+      SERVER_ENV_ACCESS_RE.lastIndex = 0;
+      const match = SERVER_ENV_ACCESS_RE.exec(snippet);
+      assert.ok(match, `SERVER_ENV_ACCESS_RE must match: ${snippet}`);
+      const varName = match[1] || match[2] || '';
+      assert.equal(
+        isServerEnvVarName(varName),
+        true,
+        `isServerEnvVarName must accept: ${varName} in ${snippet}`,
+      );
+    }
+
+    for (const snippet of SERVER_ENV_RULE_EXAMPLES.shouldIgnore) {
+      SERVER_ENV_ACCESS_RE.lastIndex = 0;
+      const match = SERVER_ENV_ACCESS_RE.exec(snippet);
+      if (match) {
+        const varName = match[1] || match[2] || '';
+        assert.equal(
+          isServerEnvVarName(varName),
+          false,
+          `isServerEnvVarName must reject public or benign variable: ${varName} in ${snippet}`,
+        );
+      }
+    }
+  });
+
+  it('performance benchmark: 2 MB continuous alphanumeric string finishes in under 100 ms', () => {
+    // 2 MB of continuous base64-like characters followed by a server env access
+    const payload = 'A'.repeat(2 * 1024 * 1024) + '.env.SUPABASE_SERVICE_ROLE_KEY';
+
+    const start = performance.now();
+    const issues = scanServerEnv(payload, '/_next/static/chunks/app.js');
+    const elapsedMs = performance.now() - start;
+
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].kind, 'server_env_in_client');
+    assert.equal(issues[0].maskedSnippet, 'SUPABASE_SERVICE_ROLE_KEY');
+    assert.ok(
+      elapsedMs < 100,
+      `scanServerEnv must finish in under 100 ms on 2 MB payload (took ${elapsedMs.toFixed(2)} ms)`,
+    );
   });
 });
