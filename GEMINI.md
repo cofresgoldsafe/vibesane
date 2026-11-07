@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-06)
-- **Versão atual publicada:** `v0.1.5` (npm + GitHub Releases `v0.1.0` a `v0.1.5`)
-- **Branch:** `feat/supabase-keys-exposed-files`
-- **Última tarefa em andamento:** **v0.1.6 (Chaves do Supabase e Varredura de Arquivos Expostos /.env e /.git/config)** — Módulo `src/rules/secrets.ts` estendido com `supabase-service-role-jwt` (validação de `role === 'service_role'` via decodificação segura de base64url do payload sem dependências externas, ignorando `anon`, `authenticated` e payloads corrompidos; máscara real `eyJ****<last2>`, sem poluir `KNOWN_SECRET_PREFIXES` com `eyJ` e com descarte explícito em `acceptEnvSecret` para zero duplicação com `env-secret`) e `supabase-secret-key` (`sb_secret_*`, ignorando `sb_publishable_*`). Módulo `src/scanner/route-crawler.ts` com probe paralela de `/.env` e `/.git/config` com `redirect: 'manual'`, teto de 64 KB (`MAX_EXPOSED_FILE_BYTES`) e timeout de leitura de corpo explícito `DEFAULT_BODY_READ_TIMEOUT_MS` (500 ms), com fail-open silencioso (zero `slow_route`, zero `http_error`, zero `truncated_body`) e sem afetar a contagem de páginas/scripts inspecionados. `/.env` extrai até 5 nomes de variáveis com garantia estrita de **zero valores vazados** em qualquer saída. `/.git/config` detecta histórico sem expor remote URLs. Contrato estendido com `SanityIssueKind: 'exposed_file'`, severidade `error`, exit code `1`, AI FIX PROMPT ordenado estritamente por `Instruction (secrets)`, `Instruction (exposed files)`, `Instruction (code)`, preservando compatibilidade exata com v0.1.5. 160/160 testes passando.
-- **Próxima tarefa:** Finalização do Red Team real, revisão de branches e preparação da release.
+- **Versão atual publicada:** `v0.1.6` (npm + GitHub Releases `v0.1.0` a `v0.1.6`)
+- **Branch:** `main` (rastreando `origin/main`)
+- **Última tarefa concluída:** **v0.1.6 (Chaves do Supabase e Varredura de Arquivos Expostos /.env e /.git/config)** — Lançada e publicada com sucesso via PR #13 e GitHub Release `v0.1.6`.
+- **Próxima tarefa:** Planejamento e definição do backlog para o próximo marco de versão (v0.1.7).
 
 ---
 
@@ -27,10 +27,6 @@
     2. `Instruction (exposed files): <EXPOSED_FILE_INSTRUCTION>`
     3. `Instruction (code): <CODE_ERROR_INSTRUCTION>`
   - O caso existente de segredos + erros de código permanece 100% idêntico ao da v0.1.5.
-
----
-
-## Decisões Arquiteturais Travadas
 - **Checagem de Sintaxe de Scripts da Aplicação (`src/scanner/syntax-check.ts`):** Compila o código estaticamente sem executá-lo para scripts com status 2xx, corpo completo (`!snap.truncated`), fora de `/_next/` e de `node_modules`. Scripts clássicos são avaliados em memória por `new vm.Script(code, { filename })`. Erros de top-level import/export (`Cannot use import statement outside a module`, `Unexpected token 'export'`, `Cannot use 'import.meta' outside a module`, `await is only valid in async functions...`) ou scripts originados de imports encadeados são promovidos a ESM e avaliados por `spawn` assíncrono com `node --check --input-type=module`. Se o subprocesso falhar, der timeout ou o orçamento de 2,5 s for abortado, aplica fail-open (retorna `null` sem ruído). Módulos com `/@vite/client` são pulados imediatamente (custo zero de subprocesso). Se o script iniciar com `<` após trim/BOM ou tiver `Content-Type: text/html`, emite `detail: "script returned HTML instead of JavaScript (the file probably does not exist and the server fell back to index.html)"`. `codeFrame` é higienizado rigorosamente na ordem: segredos -> caminhos absolutos -> ASCII safe. Limitação documentada no README: erros que só ocorrem em runtime (como reatribuir `const` dentro de callback de clique) não são detectados.
 - **Runtime & Módulo:** `engines.node: ">=22.13.0"` e `"type": "module"` (ESM puro compilado via `tsc` / `NodeNext`, zero suporte CJS desnecessário).
 - **Zero Dependências de Runtime:** `node:util` `parseArgs` para CLI, `node:util` `styleText` com suporte nativo a `NO_COLOR`/`isTTY` para cores na Task 4, e `fetch` nativo estável.
@@ -124,3 +120,9 @@
   - **Detecção de Fallbacks SPA de Scripts Inexistentes:** Identifica quando servidores SPA retornam `index.html` (200) no lugar de arquivos `.js` ausentes (`Script /x.js returned HTML instead of JavaScript (...)`).
   - **Molduras de Código ASCII Higienizadas:** `codeFrame` centralizado na coluna para linhas longas minificadas, cursor `^` ajustado para o final da linha em `Unexpected end of input`, e sanitização estrita: `sanitizeSecretsInText` → `scrubAbsolutePathsInText` → `toAsciiSafe`.
   - **Contrato e Cobertura:** `SanityIssueKind: 'syntax_error'`, severidade `'error'`, exit code `1`, instrução contextual no AI FIX PROMPT, documentação de limitações no README e 140/140 testes passando em `node:test` na matriz multiplataforma. PR #12 mergeado, versão `0.1.5` publicada no npm e GitHub Release `v0.1.5` criada.
+- `2026-11-06` — **Release v0.1.6 (`feat(scanner): Supabase service_role/sb_secret_ keys and exposed /.env and /.git/config`):**
+  - **Chaves de Administração do Supabase:** Regras `supabase-service-role-jwt` (validação de `role === 'service_role'` via decodificação de base64url do payload sem deps, ignorando `anon`/`authenticated`; máscara `eyJ****<last2>` com `redactSecret`; descartado em `acceptEnvSecret` para zero duplicatas com `env-secret`) e `supabase-secret-key` (`sb_secret_*`, ignorando `sb_publishable_*`). Ambas acusam severidade `error` mesmo em variáveis `NEXT_PUBLIC_*` e `VITE_*`.
+  - **Varredura Paralela de Arquivos Expostos:** Probes em `/.env` e `/.git/config` via helper interno `readExposedFileBody` com suporte isolado a `application/octet-stream` (sem tocar `port-detector.ts` nem abrir rotas normais de binários como `/download`), `redirect: 'manual'`, teto de 64 KB e timeout de 500 ms com fail-open silencioso e zero acréscimo na contagem de páginas/scripts inspecionados.
+  - **Proteção Absoluta de Conteúdo:** `/.env` extrai até 5 nomes de variáveis com garantia estrita de zero valores vazados. `/.git/config` detecta histórico sem expor remote URLs.
+  - **AI FIX PROMPT Modular e Ordenado:** Categorias emitidas em seções rotuladas estritamente por `Instruction (secrets)`, `Instruction (exposed files)` e `Instruction (code)` quando múltiplas falhas coexistem.
+  - **Suíte & Release:** 161/161 testes passando em `node:test` (incluindo suíte dedicada `test/exposed-files.test.mjs`), PR #13 mergeado, versão `0.1.6` publicada no npm e GitHub Release `v0.1.6` criada.
