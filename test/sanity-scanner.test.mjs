@@ -1358,7 +1358,13 @@ describe('Sanity Scanner Engine (BDD)', () => {
     });
 
     it('12i. terminal-ui e NO_COLOR: formato ASCII limpo, info sem cor própria e primeira linha colorida com TTY', async () => {
-      const srv = await startHttpServer((_req, res) => {
+      const srv = await startHttpServer((req, res) => {
+        const url = req.url ?? '/';
+        if (url === '/app.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end('console.log("app loaded");');
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<html><head><script src="/app.js"></script></head><body>OK</body></html>');
       });

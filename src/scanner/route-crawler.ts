@@ -19,6 +19,7 @@ import {
   stripViteTimestampQuery,
   type SanityIssue,
 } from './security-scan.js';
+import { checkScriptSyntax } from './syntax-check.js';
 
 export const DEFAULT_SCAN_BUDGET_MS = 2500;
 export const DEFAULT_ROUTE_TIMEOUT_MS = 2000;
@@ -57,6 +58,62 @@ const ANCHOR_HREF_RE = /<a\b[^>]*?\bhref\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/gi
 const SCRIPT_SRC_RE = /<script\b[^>]*?\bsrc\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/gi;
 const STATIC_IMPORT_RE = /(?:import|export)\s+(?:[^"'\r\n;]{1,256}?\s+from\s+)?["']([^"'\r\n]+)["']/g;
 const DYNAMIC_IMPORT_RE = /import\s*\(\s*["']([^"']+)["']\s*\)/g;
+const SCRIPT_TAG_RE = /<script\b([^>]*)>/gi;
+const STANDARD_SCRIPT_TYPES = new Set([
+  '',
+  'module',
+  'text/javascript',
+  'application/javascript',
+  'application/ecmascript',
+]);
+
+function extractNonStandardTypeScriptPaths(html: string, baseOrigin: string): Set<string> {
+  const result = new Set<string>();
+  if (!html) {
+    return result;
+  }
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(baseOrigin);
+  } catch {
+    return result;
+  }
+
+  SCRIPT_TAG_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SCRIPT_TAG_RE.exec(html)) !== null) {
+    const attrs = match[1] ?? '';
+    const srcMatch = /\bsrc\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i.exec(attrs);
+    if (!srcMatch) {
+      continue;
+    }
+    const rawSrc = (srcMatch[1] ?? srcMatch[2] ?? '').trim();
+    if (!rawSrc) {
+      continue;
+    }
+
+    let resolved: URL;
+    try {
+      resolved = new URL(rawSrc, baseUrl);
+    } catch {
+      continue;
+    }
+    if (!isSameLocalOrigin(resolved, baseUrl)) {
+      continue;
+    }
+
+    const normalized = stripViteTimestampQuery(`${resolved.pathname}${resolved.search}`);
+
+    const typeMatch = /\btype\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i.exec(attrs);
+    const rawType = (typeMatch ? (typeMatch[1] ?? typeMatch[2] ?? '') : '').trim().toLowerCase();
+
+    if (!STANDARD_SCRIPT_TYPES.has(rawType)) {
+      result.add(normalized);
+    }
+  }
+
+  return result;
+}
 const NEXT_FLIGHT_CHUNK_RE =
   /(?<=^|[^\w\\/])\\?["']((?:(?:\/_next\/)?static\/chunks\/)[A-Za-z0-9_./@%+()-]+\.js)\\?["']/g;
 
@@ -557,6 +614,7 @@ export async function runSanityScan(
   const scannedScripts: string[] = [];
   const skippedRoutes: string[] = [];
   const issues: SanityIssue[] = [];
+  const crawlStart = performance.now();
 
   const budgetController = new AbortController();
   const budgetTimer = setTimeout(() => {
@@ -683,6 +741,12 @@ export async function runSanityScan(
       issues.push(...scanSecrets(finalRoot.body, '/'));
     }
 
+    const rootHasViteClient = finalRoot.body.includes('/@vite/client');
+    const nonStandardTypeScripts = extractNonStandardTypeScriptPaths(
+      finalRoot.body,
+      baseOrigin,
+    );
+
     const candidateScripts = isFinalRootRedirect
       ? []
       : extractCandidateScripts(
@@ -726,7 +790,7 @@ export async function runSanityScan(
       }
     };
 
-    const enqueueScriptTask = (scriptPath: string): void => {
+    const enqueueScriptTask = (scriptPath: string, isModule = false): void => {
       const cleanScriptPath = stripViteTimestampQuery(scriptPath);
       taskQueue.push(async () => {
         if (budgetController.signal.aborted) {
@@ -786,6 +850,30 @@ export async function runSanityScan(
           }
 
           if (
+            snap.statusCode >= 200 &&
+            snap.statusCode < 300 &&
+            !snap.truncated &&
+            !cleanScriptPath.startsWith('/_next/') &&
+            !cleanScriptPath.includes('node_modules') &&
+            !nonStandardTypeScripts.has(cleanScriptPath)
+          ) {
+            const elapsedNow = performance.now() - crawlStart;
+            const remainingMs = Math.max(100, Math.round(scanBudgetMs - elapsedNow));
+            const syntaxIssue = await checkScriptSyntax({
+              code: snap.body,
+              route: cleanScriptPath,
+              isModule,
+              contentType: snap.contentType,
+              signal: budgetController.signal,
+              timeoutMs: Math.min(2000, remainingMs),
+              rootHasViteClient,
+            });
+            if (syntaxIssue) {
+              issues.push(syntaxIssue);
+            }
+          }
+
+          if (
             !budgetController.signal.aborted &&
             snap.statusCode >= 200 &&
             snap.statusCode < 300 &&
@@ -800,7 +888,7 @@ export async function runSanityScan(
               }
               if (!scheduledScripts.has(imp)) {
                 scheduledScripts.add(imp);
-                enqueueScriptTask(imp);
+                enqueueScriptTask(imp, true);
                 pump();
               }
             }
