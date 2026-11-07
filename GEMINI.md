@@ -2,9 +2,31 @@
 
 ## Status do Plano Ativo (2026-11-06)
 - **Versão atual publicada:** `v0.1.5` (npm + GitHub Releases `v0.1.0` a `v0.1.5`)
-- **Branch:** `main`
-- **Última tarefa concluída:** **Release v0.1.5 (Checagem de Sintaxe dos Scripts da Aplicação em Tempo de Compilação)** — Módulo `src/scanner/syntax-check.ts` sem dependências externas, validando scripts clássicos via `node:vm` `new vm.Script` em memória e módulos ES assincronamente via `spawn(process.execPath, ['--check', '--input-type=module'])` alimentado por `stdin`, com `signal = budgetController.signal`, timeout dinâmico `min(2000, remainingMs)` e fail-open limpo. Pulo com custo zero para módulos do Vite transformados contendo `/@vite/client` e scripts ES quando o HTML da raiz possui `/@vite/client`. Preservação integral das assinaturas públicas de `extractCandidateScripts` e `selectScriptsToFetch`. Pulo de checagem sintática para scripts com tipos não-JS (`text/babel`, `application/json`) e respostas JSON (mantendo varredura de segredos). Detecção de fallback SPA de arquivo inexistente que retorna `index.html` exibindo rota do script. Geração de `codeFrame` recortado em ~160 caracteres em volta da coluna com pipeline estrito: `sanitizeSecretsInText` -> `scrubAbsolutePathsInText` -> `toAsciiSafe`, e alinhamento do cursor no fim da linha em erros de terminação inesperada. Contrato estendido com `SanityIssueKind: 'syntax_error'`, exit code `1`, AI FIX PROMPT e 140/140 testes passando. Release publicada e tag `v0.1.5` associada.
-- **Próxima tarefa:** v0.1.6 — Chaves do Supabase e varredura de `.env`/`.git`.
+- **Branch:** `feat/supabase-keys-exposed-files`
+- **Última tarefa em andamento:** **v0.1.6 (Chaves do Supabase e Varredura de Arquivos Expostos /.env e /.git/config)** — Módulo `src/rules/secrets.ts` estendido com `supabase-service-role-jwt` (validação de `role === 'service_role'` via decodificação segura de base64url do payload sem dependências externas, ignorando `anon`, `authenticated` e payloads corrompidos; máscara real `eyJ****<last2>`, sem poluir `KNOWN_SECRET_PREFIXES` com `eyJ` e com descarte explícito em `acceptEnvSecret` para zero duplicação com `env-secret`) e `supabase-secret-key` (`sb_secret_*`, ignorando `sb_publishable_*`). Módulo `src/scanner/route-crawler.ts` com probe paralela de `/.env` e `/.git/config` com `redirect: 'manual'`, teto de 64 KB (`MAX_EXPOSED_FILE_BYTES`) e timeout de leitura de corpo explícito `DEFAULT_BODY_READ_TIMEOUT_MS` (500 ms), com fail-open silencioso (zero `slow_route`, zero `http_error`, zero `truncated_body`) e sem afetar a contagem de páginas/scripts inspecionados. `/.env` extrai até 5 nomes de variáveis com garantia estrita de **zero valores vazados** em qualquer saída. `/.git/config` detecta histórico sem expor remote URLs. Contrato estendido com `SanityIssueKind: 'exposed_file'`, severidade `error`, exit code `1`, AI FIX PROMPT ordenado estritamente por `Instruction (secrets)`, `Instruction (exposed files)`, `Instruction (code)`, preservando compatibilidade exata com v0.1.5. 160/160 testes passando.
+- **Próxima tarefa:** Finalização do Red Team real, revisão de branches e preparação da release.
+
+---
+
+## Decisões Arquiteturais Travadas
+- **Detecção de Chaves do Supabase (`src/rules/secrets.ts`):**
+  - `supabase-service-role-jwt`: kind `token`, regex `SUPABASE_JWT_RE = /\b(eyJ[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,})\b/g`. Decodifica o 2º segmento em base64url e valida estritamente `payload.role === 'service_role'`. Ignora tokens `anon`, `authenticated` e payloads não-JSON ou vazios. Funciona mesmo em atribuições públicas `NEXT_PUBLIC_*` / `VITE_*` e dentro de `eval("...")` do Webpack. Máscara oficial: `redactSecret` (produzindo `eyJ****` + 2 últimos caracteres). O prefixo `'eyJ'` NÃO é adicionado a `tokenPrefixes` para não fazer `startsWithKnownTokenPrefix` anular a detecção de segredos JWT genéricos em variáveis de ambiente. Em contrapartida, `acceptEnvSecret` rejeita explicitamente `isSupabaseServiceRoleJwt(value)`, garantindo que `SUPABASE_JWT_SECRET = "eyJ...service_role..."` gere exatamente 1 issue.
+  - `supabase-secret-key`: kind `token`, regex `SUPABASE_SECRET_KEY_RE = /\b(sb_secret_[0-9A-Za-z_-]{20,})\b/g`. Prefixo `sb_secret_` incluído em `tokenPrefixes` e `KNOWN_SECRET_PREFIXES`. Ignora chaves públicas `sb_publishable_`.
+- **Varredura Paralela de Arquivos Expostos (`src/scanner/route-crawler.ts`):**
+  - Dispara requisições `GET /.env` e `GET /.git/config` em paralelo com o crawling de sub-rotas e scripts logo após a confirmação da raiz.
+  - Configurações estritas: `redirect: 'manual'` (sem seguir redirects), limite de 64 KB (`MAX_EXPOSED_FILE_BYTES = 64 * 1024`) e leitura de corpo via helper interno `readExposedFileBody` com timeout explícito `DEFAULT_BODY_READ_TIMEOUT_MS = 500`.
+  - Preservação da API Pública e Isolação de `application/octet-stream`: `isTextLikeContentType` em `src/scanner/port-detector.ts` e a assinatura/comportamento de `readBoundedTextBody` permanecem 100% inalterados (rejeitando `octet-stream`), garantindo que rotas normais que servem binários (ex: `/download`) nunca sejam varridas. Apenas o helper interno `readExposedFileBody` em `route-crawler.ts` aceita `octet-stream`, permitindo ler `.env` e `.git/config` em servidores como Express e Python `http.server`.
+  - Fail-Open Absoluto: Erros de conexão, timeouts de rota ou de leitura, abortos pelo orçamento global ou cortes de corpo resultam em silêncio imediato (não geram `http_error`, `slow_route` nem `truncated_body`).
+  - Zero Impacto na Cobertura: As duas checagens não inserem itens em `routes` nem em `scannedScripts`, preservando intacta a contagem de `info: checked N pages, M scripts`.
+  - Validação de `/.env`: Exige HTTP 200, ausência de `html` em `Content-Type`, corpo sem `<` inicial após trim, e 1ª linha útil (ignorando vazias e comentários com `#`) casando com `/^(?:export\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*=/`. Arquivos vazios ou apenas comentários são limpos. Extrai até 5 nomes de variáveis (`Server exposes /.env (variables: A, B, C, D, E and N more)`). Valores nunca são capturados ou impressos em nenhum campo ou tela.
+  - Validação de `/.git/config`: Exige HTTP 200, ausência de `html`, corpo sem `<` inicial, e presença de linha com `[core]`. Detalhe emitido: `Server exposes /.git/config (the git history may be downloadable)`. URLs remotas nunca são impressas.
+- **Formatação de Instruções do AI FIX PROMPT (`src/reporter/ai-prompt-gen.ts`):**
+  - Quando apenas 1 categoria de erro estiver ativa: emite `Instruction: <instrução>`.
+  - Quando mais de 1 categoria estiver ativa: emite linhas separadas ordenadas estritamente por:
+    1. `Instruction (secrets): <SECRET_LEAK_INSTRUCTION>`
+    2. `Instruction (exposed files): <EXPOSED_FILE_INSTRUCTION>`
+    3. `Instruction (code): <CODE_ERROR_INSTRUCTION>`
+  - O caso existente de segredos + erros de código permanece 100% idêntico ao da v0.1.5.
 
 ---
 

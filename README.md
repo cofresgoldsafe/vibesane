@@ -8,7 +8,8 @@ Preflight sanity check for vibe-coded web apps, typically under 3 seconds. Zero 
 - **Route Sanity & HTTP Status:** Inspects `/` and discovered internal sub-routes for 4xx/5xx failures and slow compiling routes.
 - **Masked Errors & Overlays:** Detects Next.js and Vite error overlays, hydration crashes, and unhandled runtime errors returned with HTTP 200.
 - **Script Syntax Check:** Compiles application JavaScript files and ES modules (compile only, never executed) to catch unclosed brackets, duplicate identifiers, or missing files that return HTML instead of JS.
-- **Secret Leaks:** Scans responses and application scripts for high-entropy tokens, Stripe keys, database URIs with passwords, and private environment variables.
+- **Secret Leaks & Supabase Keys:** Scans responses and application scripts for high-entropy tokens, Stripe keys, database URIs with passwords, Supabase `service_role` keys (masked as `eyJ****` + last 2 chars; ignoring `anon`), Supabase secret keys (`sb_secret_*`; ignoring `sb_publishable_*`), and private environment variables.
+- **Exposed Files (`/.env` & `/.git/config`):** Detects if dev servers or static servers expose sensitive root files (kind `exposed_file`). For `/.env`, lists up to 5 variable names while **strictly guaranteeing that secret values never appear** in details, snippets, code frames, or AI prompts. For `/.git/config`, flags exposed git history without leaking remote URLs.
 
 ## Quickstart
 
@@ -92,7 +93,8 @@ Instruction (code): Fix only the error pointed out above; do not refactor unrela
 - **Dual-Stack Port Auto-Detection:** Probes `127.0.0.1` and `::1` across `3000, 3001, 5173, 5174, 8080, 8000, 4321` and confirms an active HTTP server.
 - **HTTP Status & Route Crawling:** Checks `/` plus up to 10 internal routes (`<a href>`) and up to 5 application scripts/modules (`<script src>` and first-level `/src/` ESM imports) for `4xx`/`5xx` responses.
 - **Masked Error Overlays on `200 OK`:** Detects Next.js and Vite runtime/compile error overlays hidden inside `200 OK` HTML responses, including Next 16 RSC/Flight error payloads and Vite/Oxc code frames.
-- **Client-Side Secret Leaks:** Scans HTML and JS bundles for exposed secrets (`sk_live_*`, `sk_test_*`, `rk_live_*`, `rk_test_*`, `AIzaSy*`, `ghp_*`, `sk-proj-*`, `sk-ant-*`, `*_SECRET`, `*_PRIVATE_KEY`, `DATABASE_URL` with credentials, and hardcoded `password`/`senha` assignments), resolving the original source file inside Turbopack and Webpack chunks while ignoring public keys (`pk_live_*`, `pk_test_*`, `NEXT_PUBLIC_*`, `VITE_*`).
+- **Client-Side Secret Leaks:** Scans HTML and JS bundles for exposed secrets (`sk_live_*`, `sk_test_*`, `rk_live_*`, `rk_test_*`, `AIzaSy*`, `ghp_*`, `sk-proj-*`, `sk-ant-*`, `sb_secret_*`, Supabase `service_role` JWTs, `*_SECRET`, `*_PRIVATE_KEY`, `DATABASE_URL` with credentials, and hardcoded `password`/`senha` assignments), resolving the original source file inside Turbopack and Webpack chunks while ignoring public keys (`pk_live_*`, `pk_test_*`, `sb_publishable_*`, `NEXT_PUBLIC_*`, `VITE_*` (except Supabase service_role JWTs, which are flagged even in NEXT_PUBLIC_* / VITE_*), and Supabase `anon` / `authenticated` keys).
+- **Exposed Files Detection:** Parallel non-blocking probe for `/.env` and `/.git/config` when the project root is mistakenly exposed. Fails safe and silent on 403, 404, or SPA fallback.
 - **Slow Routes:** Flags routes taking `> 1500ms` to return headers as `warning [slow_route]`.
 - **Truncated Responses:** Flags responses cut off by size or read timeout as non-fatal `warning [truncated_body]` (reporting the exact cause: exceeded limit, read timeout, or stream error), ensuring large bundles are accounted for.
 
@@ -134,7 +136,7 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 | Code | Meaning |
 | :--- | :--- |
 | `0` | All sanity checks passed (including non-fatal warnings) |
-| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`, `syntax_error`) or no local HTTP server found |
+| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`, `syntax_error`, `exposed_file`) or no local HTTP server found |
 | `2` | CLI usage error (invalid flag or invalid `--port` value) |
 
 ## License

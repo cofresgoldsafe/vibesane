@@ -12,6 +12,9 @@ export const AI_PROMPT_HEADER =
 export const SECRET_LEAK_INSTRUCTION =
   'Move this key to a server-only environment variable (never NEXT_PUBLIC_ / VITE_) and rotate it if it was ever committed or deployed.';
 
+export const EXPOSED_FILE_INSTRUCTION =
+  "Do not serve the project root as static files: serve only a dedicated public folder (e.g. express.static('public')), and rotate every key that was in the exposed file.";
+
 export const CODE_ERROR_INSTRUCTION =
   'Fix only the error pointed out above; do not refactor unrelated code.';
 
@@ -135,6 +138,7 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
   }
 
   const hasSecretLeak = uniqueErrors.some((err) => err.kind === 'secret_leak');
+  const hasExposedFile = uniqueErrors.some((err) => err.kind === 'exposed_file');
   const hasCodeError = uniqueErrors.some(
     (err) =>
       err.kind === 'http_error' ||
@@ -142,13 +146,29 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
       err.kind === 'syntax_error',
   );
 
-  if (hasSecretLeak && hasCodeError) {
-    lines.push(`Instruction (secrets): ${SECRET_LEAK_INSTRUCTION}`);
-    lines.push(`Instruction (code): ${CODE_ERROR_INSTRUCTION}`);
-  } else if (hasSecretLeak) {
-    lines.push(`Instruction: ${SECRET_LEAK_INSTRUCTION}`);
-  } else if (hasCodeError) {
-    lines.push(`Instruction: ${CODE_ERROR_INSTRUCTION}`);
+  const activeCategoriesCount =
+    (hasSecretLeak ? 1 : 0) +
+    (hasExposedFile ? 1 : 0) +
+    (hasCodeError ? 1 : 0);
+
+  if (activeCategoriesCount === 1) {
+    if (hasSecretLeak) {
+      lines.push(`Instruction: ${SECRET_LEAK_INSTRUCTION}`);
+    } else if (hasExposedFile) {
+      lines.push(`Instruction: ${EXPOSED_FILE_INSTRUCTION}`);
+    } else if (hasCodeError) {
+      lines.push(`Instruction: ${CODE_ERROR_INSTRUCTION}`);
+    }
+  } else if (activeCategoriesCount > 1) {
+    if (hasSecretLeak) {
+      lines.push(`Instruction (secrets): ${SECRET_LEAK_INSTRUCTION}`);
+    }
+    if (hasExposedFile) {
+      lines.push(`Instruction (exposed files): ${EXPOSED_FILE_INSTRUCTION}`);
+    }
+    if (hasCodeError) {
+      lines.push(`Instruction (code): ${CODE_ERROR_INSTRUCTION}`);
+    }
   }
 
   return toAsciiSafe(stripAnsiCodes(lines.join('\n')));
