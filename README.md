@@ -2,6 +2,14 @@
 
 Preflight sanity check for vibe-coded web apps, typically under 3 seconds. Zero config, zero runtime dependencies, instant copy-paste AI fix prompts.
 
+## What It Checks
+
+- **Server Availability & Ports:** Scans standard dev ports (`3000`, `3001`, `5173`, `5174`, `8080`, `8000`, `4321`), verifying dual-stack loopback connectivity.
+- **Route Sanity & HTTP Status:** Inspects `/` and discovered internal sub-routes for 4xx/5xx failures and slow compiling routes.
+- **Masked Errors & Overlays:** Detects Next.js and Vite error overlays, hydration crashes, and unhandled runtime errors returned with HTTP 200.
+- **Script Syntax Check:** Compiles application JavaScript files and ES modules (compile only, never executed) to catch unclosed brackets, duplicate identifiers, or missing files that return HTML instead of JS.
+- **Secret Leaks:** Scans responses and application scripts for high-entropy tokens, Stripe keys, database URIs with passwords, and private environment variables.
+
 ## Quickstart
 
 Start your local dev server (`npm run dev`), then run in another terminal:
@@ -106,6 +114,7 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 ## Limitations (What It Does Not Do)
 
 - **No Headless Browser (Not Playwright/Cypress):** Runs fast HTTP/HTML/JS inspection via `fetch`. It does not execute client-side JavaScript, click buttons, submit forms, or detect crashes that only trigger after DOM user interaction.
+- **Compile-Time vs Runtime Errors:** Performs syntax check (compile only, never executed). Runtime-only errors (e.g. reassigning a const inside a click handler) are not detected.
 - **HTML-Based Route Discovery:** Discovers sub-routes from `<a href="...">` links rendered in the HTML of `/`. In pure client-side SPAs where `<div id="root"></div>` is empty and routes exist only inside a client-side router, `vibesane` inspects `/` and up to 5 application JS modules (`/src/*`), but does not navigate client-only routes absent from initial HTML.
 - **No Authentication / Session State:** Protected routes redirecting to external login providers are skipped; same-origin redirects are followed up to 3 hops.
 - **Deterministic Caps:** Enforces a `2.5s` global crawl budget, up to `10` routes, `5` scripts, `1 MB` per HTML page, and `8 MB` per script.
@@ -125,7 +134,7 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 | Code | Meaning |
 | :--- | :--- |
 | `0` | All sanity checks passed (including non-fatal warnings) |
-| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`) or no local HTTP server found |
+| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`, `syntax_error`) or no local HTTP server found |
 | `2` | CLI usage error (invalid flag or invalid `--port` value) |
 
 ## License

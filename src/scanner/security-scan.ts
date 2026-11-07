@@ -27,6 +27,7 @@ export type SanityIssueKind =
   | 'masked_error'
   | 'secret_leak'
   | 'slow_route'
+  | 'syntax_error'
   | 'truncated_body';
 
 export interface SanityIssue {
@@ -336,7 +337,7 @@ function extractSafeAppPath(rawPath?: string): string | null {
   return null;
 }
 
-function scrubAbsolutePathsInText(text: string): string {
+export function scrubAbsolutePathsInText(text: string): string {
   if (!text) {
     return '';
   }

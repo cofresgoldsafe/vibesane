@@ -136,7 +136,10 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
 
   const hasSecretLeak = uniqueErrors.some((err) => err.kind === 'secret_leak');
   const hasCodeError = uniqueErrors.some(
-    (err) => err.kind === 'http_error' || err.kind === 'masked_error',
+    (err) =>
+      err.kind === 'http_error' ||
+      err.kind === 'masked_error' ||
+      err.kind === 'syntax_error',
   );
 
   if (hasSecretLeak && hasCodeError) {
