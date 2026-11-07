@@ -930,7 +930,20 @@ export async function runSanityScan(
     const isFinalRootRedirect =
       finalRoot.statusCode >= 300 && finalRoot.statusCode < 400;
 
-    if (finalRoot.statusCode >= 400) {
+    const isApiOnlyRoot =
+      finalRoot.statusCode === 404 &&
+      finalRoot.contentType.toLowerCase().includes('json');
+
+    if (isApiOnlyRoot) {
+      issues.push({
+        kind: 'http_error',
+        severity: 'warning',
+        route: '/',
+        statusCode: 404,
+        detail:
+          '/ returned 404 JSON; looks like an API-only server, nothing to check at /',
+      });
+    } else if (finalRoot.statusCode >= 400) {
       const structured =
         extractNextErrorInfo(finalRoot.body, '/') ??
         extractViteErrorInfo(finalRoot.body, '/');

@@ -1880,4 +1880,199 @@ describe('Sanity Scanner Engine (BDD)', () => {
       }
     });
   });
+
+  describe('15. Tratamento de Raiz 404 JSON para Servidores de API (api_only_server)', () => {
+    it('15a. Raiz 404 com application/json emite warning [http_error], ok: true e exit code 0', async () => {
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ detail: 'Not Found' }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.equal(res.aiPrompt, null);
+        assert.equal(res.issues.length, 1);
+        assert.equal(res.issues[0].kind, 'http_error');
+        assert.equal(res.issues[0].severity, 'warning');
+        assert.equal(res.issues[0].route, '/');
+        assert.equal(res.issues[0].statusCode, 404);
+        assert.equal(
+          res.issues[0].detail,
+          '/ returned 404 JSON; looks like an API-only server, nothing to check at /',
+        );
+        assert.ok(res.message.includes('warning [http_error]: / returned 404 JSON; looks like an API-only server, nothing to check at /'));
+        assert.ok(res.message.includes('info: checked 1 page, 0 scripts'));
+
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, EXIT_CODES.OK);
+        assert.equal(cliRes.code, 0);
+        assert.ok(cliRes.stdout.includes('warning [http_error]: / returned 404 JSON; looks like an API-only server, nothing to check at /'));
+        assert.ok(!cliRes.stdout.includes('AI FIX PROMPT'));
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('15b. Raiz 404 com application/problem+json emite warning [http_error] e exit code 0', async () => {
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(404, { 'Content-Type': 'application/problem+json; charset=utf-8' });
+          res.end(JSON.stringify({ type: 'about:blank', title: 'Not Found', status: 404 }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.equal(res.aiPrompt, null);
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, 0);
+        assert.ok(cliRes.stdout.includes('warning [http_error]: / returned 404 JSON; looks like an API-only server, nothing to check at /'));
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('15c. Raiz 404 com text/html continua emitindo error [http_error] e exit code 1', async () => {
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<!DOCTYPE html><html><pre>Cannot GET /</pre></html>');
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        assert.ok(res.aiPrompt !== null);
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, EXIT_CODES.SANITY_FAILURE);
+        assert.equal(cliRes.code, 1);
+        assert.ok(cliRes.stdout.includes('error [http_error]: HTTP 404 on route /'));
+        assert.ok(cliRes.stdout.includes('AI FIX PROMPT'));
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('15d. Raiz 500 com application/json continua emitindo error [http_error] e exit code 1', async () => {
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal Server Error' }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        assert.ok(res.aiPrompt !== null);
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, 1);
+        assert.ok(cliRes.stdout.includes('error [http_error]: HTTP 500 on route /'));
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('15e. Raiz 401 e 405 com application/json continuam emitindo error [http_error]', async () => {
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        assert.equal(res.issues[0].severity, 'error');
+        assert.equal(res.issues[0].statusCode, 401);
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('15f. Raiz 404 JSON com segredo no corpo emite warning [http_error] e error [secret_leak] com ok: false', async () => {
+      const fakeSecret = ['sk', 'live', '1234567890abcdef1234567890abcdef'].join('_');
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ detail: 'Not Found', debug_token: fakeSecret }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        assert.ok(res.issues.some((i) => i.kind === 'http_error' && i.severity === 'warning'));
+        assert.ok(res.issues.some((i) => i.kind === 'secret_leak' && i.severity === 'error'));
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, 1);
+        assert.ok(cliRes.stdout.includes('warning [http_error]'));
+        assert.ok(cliRes.stdout.includes('error [secret_leak]'));
+        assert.ok(cliRes.stdout.includes('AI FIX PROMPT'));
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('15g. Sub-rota 404 JSON continua emitindo error [http_error] e exit code 1', async () => {
+      const homeHtml = `
+        <!DOCTYPE html>
+        <html>
+          <body>
+            <a href="/api/missing">Missing API Route</a>
+          </body>
+        </html>
+      `;
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(homeHtml);
+          return;
+        }
+        if (req.url === '/api/missing') {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ detail: 'Not Found' }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        const subRouteIssue = res.issues.find((i) => i.route === '/api/missing');
+        assert.ok(subRouteIssue);
+        assert.equal(subRouteIssue.kind, 'http_error');
+        assert.equal(subRouteIssue.severity, 'error');
+        assert.equal(subRouteIssue.statusCode, 404);
+      } finally {
+        await srv.close();
+      }
+    });
+  });
 });
