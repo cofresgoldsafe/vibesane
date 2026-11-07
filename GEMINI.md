@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-07)
-- **Versão atual no package.json:** `0.1.7` (em desenvolvimento na branch `fix/api-root-404-json` para v0.1.8)
-- **Branch:** `fix/api-root-404-json`
-- **Última tarefa concluída:** **Release v0.1.7 (Detecção de Variáveis de Servidor no Cliente — `server_env_in_client`)** — Regra implementada em `src/rules/server-env.ts` com ancoragem em `\.env`, eliminando tempo quadrático em sourcemaps base64 (2 MB em 0,85 ms). Cobertura universal de bundlers: Turbopack (`__["default"].env.X`), Webpack (`eval` e `r(357).env.X`) e Vite 8 (`import.meta.env.X`), com resolução de fronteira de módulo (`findModuleBoundary`), descarte de third-party (`node_modules`), deduplicação por `(targetRoute, varName)` e AI FIX PROMPT específico. 172/172 testes passando, Red Team real validado, PR #15 mergeado e release v0.1.7 publicada oficialmente.
-- **Tarefa em andamento:** **Tratamento de Raiz 404 JSON para Servidores de API (v0.1.8)** — Raiz respondendo status 404 final com `Content-Type: *json*` tratada como `warning [http_error]` (exit code 0, sem AI FIX PROMPT).
+- **Versão atual no package.json:** `0.1.8` (publicada no npm e GitHub Release `v0.1.8`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.8 (Tratamento de Raiz 404 JSON para Servidores de API)** — Raiz respondendo status 404 final com `Content-Type: *json*` tratada como `warning [http_error]` (exit code 0, sem AI FIX PROMPT). Casos negativos (404 HTML, 500 JSON, 401/403/405 JSON e sub-rotas 404) continuam `error` com exit code 1. Varredura de segredos no corpo e checagem de arquivos expostos permanecem ativas. 180/180 testes passando, Red Team real validado, PR #16 mergeado e release v0.1.8 publicada oficialmente.
+- **Próxima tarefa:** Monitoramento de adoção da v0.1.8 e backlog de novas regras.
 
 ---
 
