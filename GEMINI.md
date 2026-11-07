@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-07)
-- **Versão atual no package.json:** `0.1.6`
-- **Branch:** `feat/server-env-in-client`
-- **Última tarefa concluída:** **Detecção de Variáveis de Servidor no Cliente (`server_env_in_client`)** — Módulo `src/rules/server-env.ts` com regex `SERVER_ENV_ACCESS_RE = /\.env(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[\\?["']([A-Za-z_][A-Za-z0-9_]*)\\?["']\])/g` e predicado `isServerEnvVarName` (aceita `SERVICE_ROLE`, `_SECRET`, `_SECRET_KEY`, `_PRIVATE_KEY` e `DATABASE_URL`, ignorando prefixos públicos `NEXT_PUBLIC_` e `VITE_`). A ancoragem direta em `\.env` elimina tempo quadrático com source maps base64 (2 MB em 0,85 ms) e captura perfeitamente o Turbopack do Next 16 (`__["default"].env.X`), Webpack em dev (`eval("...process.env.X...")`) e produção (`r(357).env.X`), e Vite 8 (`import.meta.env.X`). Varredura exclusiva sobre scripts de cliente baixados pelo crawler (`cleanScriptPath`), com descarte automático de third-party (`node_modules` e `next/dist` via `boundary.isThirdParty === true`, eliminando falsos positivos de JSDoc em `@supabase/auth-js`), deduplicação por `(targetRoute, varName)` e AI FIX PROMPT com instrução específica orientando migração para `server-only`. 172/172 testes passando e Red Team real validado em Webpack, Turbopack, Vite 8 e Gemini-Assistencia-Portal.
-- **Próxima tarefa:** Revisão de PR e publicação da release v0.1.7.
+- **Versão atual no package.json:** `0.1.7` (publicada no npm e GitHub Release `v0.1.7`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.7 (Detecção de Variáveis de Servidor no Cliente — `server_env_in_client`)** — Regra implementada em `src/rules/server-env.ts` com ancoragem em `\.env`, eliminando tempo quadrático em sourcemaps base64 (2 MB em 0,85 ms). Cobertura universal de bundlers: Turbopack (`__["default"].env.X`), Webpack (`eval` e `r(357).env.X`) e Vite 8 (`import.meta.env.X`), com resolução de fronteira de módulo (`findModuleBoundary`), descarte de third-party (`node_modules`), deduplicação por `(targetRoute, varName)` e AI FIX PROMPT específico. 172/172 testes passando, Red Team real validado, PR #15 mergeado e release v0.1.7 publicada oficialmente.
+- **Próxima tarefa:** Monitoramento de adoção da v0.1.7 e backlog de novas regras.
 
 ---
 
