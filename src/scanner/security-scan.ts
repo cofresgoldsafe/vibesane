@@ -23,6 +23,7 @@ export { redactSecret, redactPassword, redactConnectionUri };
 
 export type SanitySeverity = 'error' | 'warning';
 export type SanityIssueKind =
+  | 'exposed_file'
   | 'http_error'
   | 'masked_error'
   | 'secret_leak'

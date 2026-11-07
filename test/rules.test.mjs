@@ -12,6 +12,10 @@ import {
   PEM_PRIVATE_KEY_RE,
   INLINE_CONN_URI_RE,
   EXTRA_TOKENS_RE,
+  SUPABASE_JWT_RE,
+  SUPABASE_SECRET_KEY_RE,
+  isSupabaseServiceRoleJwt,
+  redactSecret,
 } from '../dist/rules/secrets.js';
 import { MASKED_ERROR_RULES } from '../dist/rules/masked-errors.js';
 import {
@@ -59,6 +63,8 @@ describe('declarative catalog contract (SECRET_RULES & MASKED_ERROR_RULES)', () 
       ['PEM_PRIVATE_KEY_RE', PEM_PRIVATE_KEY_RE],
       ['INLINE_CONN_URI_RE', INLINE_CONN_URI_RE],
       ['EXTRA_TOKENS_RE', EXTRA_TOKENS_RE],
+      ['SUPABASE_JWT_RE', SUPABASE_JWT_RE],
+      ['SUPABASE_SECRET_KEY_RE', SUPABASE_SECRET_KEY_RE],
     ];
 
     for (const [name, re] of exportedEngineRegexes) {
@@ -77,6 +83,7 @@ describe('declarative catalog contract (SECRET_RULES & MASKED_ERROR_RULES)', () 
       ['ghp', '_'].join(''),
       ['sk-', 'proj-'].join(''),
       ['sk-', 'ant-'].join(''),
+      ['sb_secret_'].join(''),
     ];
     assert.deepEqual([...KNOWN_SECRET_PREFIXES], expectedPrefixes);
 
@@ -274,5 +281,104 @@ describe('behavioral equivalence with v0.1.1 (provider-tokens order & sanitizeSe
     assert.ok(!sanitized.includes('my_webhook_secret_token_99'));
     assert.ok(sanitized.includes('A***'));
     assert.ok(!sanitized.includes('AdminPass99!'));
+  });
+});
+
+describe('Supabase keys detection (service_role JWT & sb_secret_) — v0.1.6', () => {
+  function makeJwt(payloadObj, signature = 'sig1234567890abcdef99') {
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify(payloadObj)).toString('base64url');
+    return [header, payload, signature].join('.');
+  }
+
+  it('detects Supabase service_role JWT with exact label and eyJ****<last2> mask', () => {
+    const jwt = makeJwt({ role: 'service_role', iss: 'supabase' }, 'sig1234567890abcdef99');
+    const code = `const supabaseKey = "${jwt}";`;
+    const issues = scanSecrets(code, '/src/supabaseClient.ts');
+
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].kind, 'secret_leak');
+    assert.equal(
+      issues[0].detail,
+      'Secret leak on /src/supabaseClient.ts: Supabase service_role key (full database access, bypasses RLS; use the anon key + RLS in the browser) (eyJ****99)',
+    );
+    assert.equal(issues[0].maskedSnippet, 'eyJ****99');
+    assert.equal(redactSecret(jwt), 'eyJ****99');
+  });
+
+  it('ignores Supabase anon and authenticated JWTs (zero false positives)', () => {
+    const anonJwt = makeJwt({ role: 'anon', iss: 'supabase' });
+    const authJwt = makeJwt({ role: 'authenticated', iss: 'supabase' });
+    const code = [
+      `const anonKey = "${anonJwt}";`,
+      `const userKey = "${authJwt}";`,
+    ].join('\n');
+
+    const issues = scanSecrets(code, '/src/supabaseClient.ts');
+    assert.equal(issues.length, 0);
+  });
+
+  it('ignores JWT with invalid / non-json payload', () => {
+    const badJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.not-valid-base64-json.sig1234567890abcdef99';
+    const code = `const key = "${badJwt}";`;
+    const issues = scanSecrets(code, '/src/supabaseClient.ts');
+    assert.equal(issues.length, 0);
+  });
+
+  it('detects service_role JWT even inside NEXT_PUBLIC_ and VITE_ variable declarations', () => {
+    const jwt = makeJwt({ role: 'service_role' });
+    const code = [
+      `NEXT_PUBLIC_SUPABASE_KEY = "${jwt}"`,
+      `VITE_SUPABASE_SERVICE_ROLE = "${jwt}"`,
+    ].join('\n');
+
+    const issues = scanSecrets(code, '/src/config.ts');
+    assert.equal(issues.length, 1); // deduplicated per route & masked snippet
+    assert.match(issues[0].detail, /Supabase service_role key/);
+  });
+
+  it('detects service_role JWT inside webpack eval with escaped quotes (\\")', () => {
+    const jwt = makeJwt({ role: 'service_role' });
+    const evalCode = `eval("/* webpack */ const supabase = createClient(\\\"https://xyz.supabase.co\\\", \\\"${jwt}\\\");\\n");`;
+
+    const issues = scanSecrets(evalCode, '/_next/static/chunks/app.js');
+    assert.equal(issues.length, 1);
+    assert.match(issues[0].detail, /Supabase service_role key/);
+  });
+
+  it('detects sb_secret_ and ignores sb_publishable_', () => {
+    const secretKey = ['sb_secret_', '1234567890abcdef1234'].join('');
+    const pubKey = ['sb_publishable_', '1234567890abcdef1234'].join('');
+    const code = [
+      `const secret = "${secretKey}";`,
+      `const pub = "${pubKey}";`,
+    ].join('\n');
+
+    const issues = scanSecrets(code, '/src/supabase.ts');
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].kind, 'secret_leak');
+    assert.equal(issues[0].detail, 'Secret leak on /src/supabase.ts: Supabase secret key (sb_secret_****1234)');
+    assert.equal(issues[0].maskedSnippet, 'sb_secret_****1234');
+    assert.equal(redactSecret(secretKey), 'sb_secret_****1234');
+  });
+
+  it('deduplicates SUPABASE_JWT_SECRET = "eyJ...service_role..." into exactly ONE issue', () => {
+    const jwt = makeJwt({ role: 'service_role' });
+    const code = `SUPABASE_JWT_SECRET = "${jwt}"`;
+
+    const issues = scanSecrets(code, '/src/config.ts');
+    assert.equal(issues.length, 1);
+    assert.match(issues[0].detail, /Supabase service_role key/);
+    assert.doesNotMatch(issues[0].detail, /SUPABASE_JWT_SECRET/);
+  });
+
+  it('preserves detection of non-service-role JWTs assigned to ENV secrets via env-secret rule', () => {
+    const nonServiceRoleJwt = makeJwt({ sub: 'user_123', iss: 'auth0' });
+    const code = `APP_SIGNING_SECRET = "${nonServiceRoleJwt}"`;
+
+    const issues = scanSecrets(code, '/src/config.ts');
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].kind, 'secret_leak');
+    assert.match(issues[0].detail, /APP_SIGNING_SECRET/);
   });
 });

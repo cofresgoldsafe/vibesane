@@ -579,6 +579,234 @@ function isHtmlLike(contentType: string, body: string): boolean {
   );
 }
 
+export const MAX_EXPOSED_FILE_BYTES = 64 * 1024;
+const ENV_FIRST_USEFUL_LINE_RE = /^(?:export\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*=/;
+const ENV_VAR_NAMES_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*=/gm;
+const GIT_CONFIG_CORE_LINE_RE = /^\s*\[core\]/m;
+
+export function inspectExposedEnvBody(body: string, contentType: string): string | null {
+  if (!body) {
+    return null;
+  }
+  if (contentType.toLowerCase().includes('html')) {
+    return null;
+  }
+  const trimmed = body.trimStart();
+  if (trimmed.startsWith('<')) {
+    return null;
+  }
+
+  const lines = body.split(/\r?\n/);
+  let firstUsefulLine: string | null = null;
+  for (const rawLine of lines) {
+    const trimmedLine = rawLine.trim();
+    if (trimmedLine.length === 0 || trimmedLine.startsWith('#')) {
+      continue;
+    }
+    firstUsefulLine = trimmedLine;
+    break;
+  }
+
+  if (!firstUsefulLine || !ENV_FIRST_USEFUL_LINE_RE.test(firstUsefulLine)) {
+    return null;
+  }
+
+  const varNames: string[] = [];
+  const seenVars = new Set<string>();
+  ENV_VAR_NAMES_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ENV_VAR_NAMES_RE.exec(body)) !== null) {
+    const varName = match[1];
+    if (varName && !seenVars.has(varName)) {
+      seenVars.add(varName);
+      varNames.push(varName);
+    }
+  }
+
+  if (varNames.length === 0) {
+    return null;
+  }
+
+  const MAX_SHOWN_VARS = 5;
+  const shown = varNames.slice(0, MAX_SHOWN_VARS);
+  const remaining = varNames.length - shown.length;
+  const formattedVars =
+    remaining > 0
+      ? `${shown.join(', ')} and ${remaining} more`
+      : shown.join(', ');
+
+  return `Server exposes /.env (variables: ${formattedVars})`;
+}
+
+export function inspectExposedGitConfigBody(body: string, contentType: string): boolean {
+  if (!body) {
+    return false;
+  }
+  if (contentType.toLowerCase().includes('html')) {
+    return false;
+  }
+  const trimmed = body.trimStart();
+  if (trimmed.startsWith('<')) {
+    return false;
+  }
+  return GIT_CONFIG_CORE_LINE_RE.test(body);
+}
+
+async function readExposedFileBody(
+  res: Response,
+  maxBytes: number = MAX_EXPOSED_FILE_BYTES,
+  bodyTimeoutMs: number = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<string> {
+  const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
+  if (
+    contentType.includes('html') ||
+    contentType.includes('image/') ||
+    contentType.includes('audio/') ||
+    contentType.includes('video/')
+  ) {
+    await res.body?.cancel().catch(() => {});
+    return '';
+  }
+
+  if (!res.body) {
+    return '';
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  const parts: string[] = [];
+  let totalBytes = 0;
+  let timedOut = false;
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<{ kind: 'timeout' }>((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      void reader.cancel().catch(() => {});
+      resolve({ kind: 'timeout' });
+    }, bodyTimeoutMs);
+  });
+
+  try {
+    while (!timedOut) {
+      const readPromise = reader.read().then(
+        (result) => ({ kind: 'chunk' as const, result }),
+        () => ({ kind: 'error' as const }),
+      );
+      const outcome = await Promise.race([readPromise, timeoutPromise]);
+
+      if (outcome.kind === 'timeout' || outcome.kind === 'error') {
+        break;
+      }
+
+      const { done, value: chunk } = outcome.result;
+      if (done) {
+        break;
+      }
+
+      if (!chunk || chunk.byteLength === 0) {
+        continue;
+      }
+
+      const remaining = maxBytes - totalBytes;
+      if (remaining <= 0) {
+        await reader.cancel().catch(() => {});
+        break;
+      }
+
+      const slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+      parts.push(decoder.decode(slice, { stream: true }));
+      totalBytes += slice.byteLength;
+      if (chunk.byteLength > remaining) {
+        await reader.cancel().catch(() => {});
+        break;
+      }
+    }
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+
+  parts.push(decoder.decode());
+  return parts.join('');
+}
+
+async function fetchExposedFileSnapshot(
+  baseOrigin: string,
+  filePath: string,
+  signal: AbortSignal,
+  routeTimeoutMs: number,
+): Promise<{ statusCode: number; contentType: string; body: string } | null> {
+  let targetUrl: URL;
+  try {
+    targetUrl = new URL(filePath, baseOrigin);
+  } catch {
+    return null;
+  }
+
+  const hopSignal = AbortSignal.any([signal, AbortSignal.timeout(routeTimeoutMs)]);
+  try {
+    const res = await fetch(targetUrl.toString(), {
+      method: 'GET',
+      redirect: 'manual',
+      signal: hopSignal,
+    });
+    const statusCode = res.status;
+    const contentType = res.headers.get('content-type') ?? '';
+    if (statusCode !== 200) {
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
+    const body = await readExposedFileBody(
+      res,
+      MAX_EXPOSED_FILE_BYTES,
+      DEFAULT_BODY_READ_TIMEOUT_MS,
+    );
+    return { statusCode, contentType, body };
+  } catch {
+    return null;
+  }
+}
+
+async function probeExposedFiles(
+  baseOrigin: string,
+  signal: AbortSignal,
+  routeTimeoutMs: number,
+): Promise<SanityIssue[]> {
+  const issues: SanityIssue[] = [];
+
+  const [envSnap, gitSnap] = await Promise.all([
+    fetchExposedFileSnapshot(baseOrigin, '/.env', signal, routeTimeoutMs),
+    fetchExposedFileSnapshot(baseOrigin, '/.git/config', signal, routeTimeoutMs),
+  ]);
+
+  if (envSnap && envSnap.statusCode === 200) {
+    const detail = inspectExposedEnvBody(envSnap.body, envSnap.contentType);
+    if (detail) {
+      issues.push({
+        kind: 'exposed_file',
+        severity: 'error',
+        route: '/.env',
+        detail,
+      });
+    }
+  }
+
+  if (gitSnap && gitSnap.statusCode === 200) {
+    if (inspectExposedGitConfigBody(gitSnap.body, gitSnap.contentType)) {
+      issues.push({
+        kind: 'exposed_file',
+        severity: 'error',
+        route: '/.git/config',
+        detail: 'Server exposes /.git/config (the git history may be downloadable)',
+      });
+    }
+  }
+
+  return issues;
+}
+
 export async function runSanityScan(
   host: LoopbackHost,
   port: number,
@@ -1036,6 +1264,12 @@ export async function runSanityScan(
       });
     };
 
+    const exposedFilesPromise = probeExposedFiles(
+      baseOrigin,
+      budgetController.signal,
+      routeTimeoutMs,
+    );
+
     for (const scriptPath of candidateScripts) {
       enqueueScriptTask(scriptPath);
     }
@@ -1046,6 +1280,9 @@ export async function runSanityScan(
 
     pump();
     await poolDone;
+
+    const exposedIssues = await exposedFilesPromise;
+    issues.push(...exposedIssues);
 
     for (const routePath of subRoutes) {
       const item = subRouteOutcomes.get(routePath);

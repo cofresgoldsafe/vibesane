@@ -47,6 +47,12 @@ export const INLINE_CONN_URI_RE =
 export const EXTRA_TOKENS_RE =
   /\b(AKIA[0-9A-Z]{16}|glpat-[0-9A-Za-z_-]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|eyJ[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,})\b/g;
 
+export const SUPABASE_JWT_RE =
+  /\b(eyJ[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,}\.[0-9A-Za-z_-]{10,})\b/g;
+
+export const SUPABASE_SECRET_KEY_RE =
+  /\b(sb_secret_[0-9A-Za-z_-]{20,})\b/g;
+
 export function redactSecret(secret: string): string {
   for (const prefix of KNOWN_SECRET_PREFIXES) {
     if (secret.startsWith(prefix)) {
@@ -101,6 +107,27 @@ export function acceptTokenSecret(value: string): boolean {
   return Boolean(value) && !isPublicStripeKey(value);
 }
 
+export function isSupabaseServiceRoleJwt(token: string): boolean {
+  if (!token || !token.startsWith('eyJ')) {
+    return false;
+  }
+  const parts = token.split('.');
+  if (parts.length < 2 || !parts[1]) {
+    return false;
+  }
+  try {
+    const jsonStr = Buffer.from(parts[1], 'base64url').toString('utf8');
+    const parsed = JSON.parse(jsonStr) as { role?: unknown };
+    return Boolean(
+      parsed &&
+        typeof parsed === 'object' &&
+        parsed.role === 'service_role',
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function acceptEnvSecret(value: string, ctx: SecretMatchContext): boolean {
   if (!ctx.key || !value) {
     return false;
@@ -111,7 +138,8 @@ export function acceptEnvSecret(value: string, ctx: SecretMatchContext): boolean
   if (
     isPlaceholderSecret(value) ||
     isPublicStripeKey(value) ||
-    startsWithKnownTokenPrefix(value)
+    startsWithKnownTokenPrefix(value) ||
+    isSupabaseServiceRoleJwt(value)
   ) {
     return false;
   }
@@ -206,6 +234,53 @@ export const SECRET_RULES: readonly SecretRule[] = [
       shouldIgnore: [
         `const shortGh = "${['ghp', '_short123'].join('')}";`,
         'const normalText = "hello world";',
+      ],
+    },
+  },
+  {
+    id: 'supabase-service-role-jwt',
+    kind: 'token',
+    label:
+      'Supabase service_role key (full database access, bypasses RLS; use the anon key + RLS in the browser)',
+    regex: SUPABASE_JWT_RE,
+    accept: (value) => isSupabaseServiceRoleJwt(value),
+    examples: {
+      shouldDetect: [
+        `const key = "${[
+          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+          Buffer.from(JSON.stringify({ role: 'service_role' })).toString('base64url'),
+          'sig1234567890',
+        ].join('.')}";`,
+      ],
+      shouldIgnore: [
+        `const anon = "${[
+          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+          Buffer.from(JSON.stringify({ role: 'anon' })).toString('base64url'),
+          'sig1234567890',
+        ].join('.')}";`,
+        `const auth = "${[
+          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+          Buffer.from(JSON.stringify({ role: 'authenticated' })).toString('base64url'),
+          'sig1234567890',
+        ].join('.')}";`,
+        'const invalid = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.not-valid-json.sig1234567890";',
+      ],
+    },
+  },
+  {
+    id: 'supabase-secret-key',
+    kind: 'token',
+    label: 'Supabase secret key',
+    tokenPrefixes: ['sb_secret_'],
+    regex: SUPABASE_SECRET_KEY_RE,
+    accept: acceptTokenSecret,
+    examples: {
+      shouldDetect: [
+        `const sb = "${['sb_secret_', '1234567890abcdef1234'].join('')}";`,
+      ],
+      shouldIgnore: [
+        `const pub = "${['sb_publishable_', '1234567890abcdef1234'].join('')}";`,
+        `const shortSb = "${['sb_secret_', 'short123'].join('')}";`,
       ],
     },
   },
