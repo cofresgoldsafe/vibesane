@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.9` (branch `feat/openapi-probe` pronta para v0.1.10)
-- **Branch:** `feat/openapi-probe`
-- **Última tarefa concluída:** **Melhoria nº 3 (Sonda /openapi.json, v0.1.10)** — Sonda de rotas GET descobertas em `/openapi.json` sem autenticação. Filtros rigorosos anti-SSRF/host-injection (`isSameLocalOrigin`), exclusão de verbos de ação (`cron`, `run`, etc.), path params `{id}`, query params obrigatórios (`required: true` ou `$ref`) e rotas reservadas (`/health`, `/docs`, etc.). Limite de até 5 rotas. Kind `unauthenticated_api_route` como `warning` (exit code 0). Varredura de segredos no corpo 200 JSON via `scanSecrets` (gerando `secret_leak` error). Campo público `probedApiRoutes: string[]` em `SanityScanSummary` e `VibesaneResult`. Linha de saída `info: probed N GET route(s) listed in /openapi.json` compatível com `/seg`. 196/196 testes passando e Red Team real validado em servidor FastAPI na porta 8790.
-- **Próxima tarefa:** Revisão de PR, merge na `main` e publicação da release `v0.1.10`.
+- **Versão atual no package.json:** `0.1.10` (publicada no npm e GitHub Release `v0.1.10`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.10 (Sonda /openapi.json e Rotas de API sem Autenticação)** — Sonda de rotas GET descobertas em `/openapi.json` sem autenticação. Filtros rigorosos anti-SSRF/host-injection (`isSameLocalOrigin`), exclusão de verbos de ação (`cron`, `run`, etc.), path params `{id}`, query params obrigatórios (`required: true` ou `$ref`) e rotas reservadas (`/health`, `/docs`, etc.). Limite de até 5 rotas. Kind `unauthenticated_api_route` como `warning` (exit code 0). Varredura de segredos no corpo 200 JSON via `scanSecrets` (gerando `secret_leak` error). Campo público `probedApiRoutes: string[]` em `SanityScanSummary` e `VibesaneResult`. Linha de saída `info: probed N GET route(s) listed in /openapi.json` compatível com `/seg`. 196/196 testes passando e Red Team real validado em servidor FastAPI na porta 8790. PR #18 mergeado na `main`, versão 0.1.10 publicada no npm e GitHub Release `v0.1.10` criada.
+- **Próxima tarefa:** Nenhuma melhoria pendente no código do `vibesane` (a melhoria pendente nº 4 é nas skills `/seg` e `/publi` do Antigravity).
 
 ---
 
