@@ -37,7 +37,8 @@ export type SanityIssueKind =
   | 'syntax_error'
   | 'truncated_body'
   | 'unauthenticated_admin_route'
-  | 'unauthenticated_api_route';
+  | 'unauthenticated_api_route'
+  | 'unsanitized_html';
 
 export interface SanityIssue {
   kind: SanityIssueKind;
@@ -88,7 +89,7 @@ export function detectMaskedError(html: string, route: string): SanityIssue[] {
   return [];
 }
 
-interface ModuleBoundary {
+export interface ModuleBoundary {
   readonly index: number;
   readonly path: string;
   readonly isThirdParty: boolean;
@@ -100,7 +101,7 @@ const WEBPACK_MODULE_DEF_RE =
 const TURBOPACK_MODULE_DEF_RE =
   /"\[project\]\/([^"\s]+)(?:\s+\[[^\]\r\n]+\])?(?:\s+\((?:ecmascript|hmr-entry)\))?(?:\s+<[^>"\r\n]+>)?"\s*[,:]\s*\(?\(?__turbopack_context__/g;
 
-function extractModuleBoundaries(content: string): ModuleBoundary[] {
+export function extractModuleBoundaries(content: string): ModuleBoundary[] {
   if (!content) {
     return [];
   }
@@ -140,23 +141,23 @@ function extractModuleBoundaries(content: string): ModuleBoundary[] {
   return boundaries;
 }
 
-function findModuleBoundary(
+export function findModuleBoundaryIndex(
   boundaries: readonly ModuleBoundary[],
   matchIndex: number,
-): ModuleBoundary | null {
+): number {
   if (boundaries.length === 0 || matchIndex < 0) {
-    return null;
+    return -1;
   }
 
   let low = 0;
   let high = boundaries.length - 1;
-  let best: ModuleBoundary | null = null;
+  let best = -1;
 
   while (low <= high) {
     const mid = (low + high) >> 1;
     const item = boundaries[mid]!;
     if (item.index <= matchIndex) {
-      best = item;
+      best = mid;
       low = mid + 1;
     } else {
       high = mid - 1;
@@ -164,6 +165,14 @@ function findModuleBoundary(
   }
 
   return best;
+}
+
+export function findModuleBoundary(
+  boundaries: readonly ModuleBoundary[],
+  matchIndex: number,
+): ModuleBoundary | null {
+  const idx = findModuleBoundaryIndex(boundaries, matchIndex);
+  return idx >= 0 ? boundaries[idx]! : null;
 }
 
 export function resolveBundledSourceFile(content: string, matchIndex: number): string | null {
