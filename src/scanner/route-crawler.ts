@@ -22,6 +22,7 @@ import {
 } from './security-scan.js';
 import { checkScriptSyntax } from './syntax-check.js';
 import { probeCors } from './cors-probe.js';
+import { probeAdminRoutes } from './admin-probe.js';
 
 export const DEFAULT_SCAN_BUDGET_MS = 2500;
 export const DEFAULT_ROUTE_TIMEOUT_MS = 2000;
@@ -1556,6 +1557,12 @@ export async function runSanityScan(
       budgetController.signal,
       routeTimeoutMs,
     );
+    const adminPromise = probeAdminRoutes(
+      baseOrigin,
+      finalRoot.body ?? '',
+      budgetController.signal,
+      routeTimeoutMs,
+    );
 
     for (const scriptPath of candidateScripts) {
       enqueueScriptTask(scriptPath);
@@ -1568,15 +1575,17 @@ export async function runSanityScan(
     pump();
     await poolDone;
 
-    const [exposedIssues, resolvedOpenApi, corsIssues] = await Promise.all([
+    const [exposedIssues, resolvedOpenApi, corsIssues, adminIssues] = await Promise.all([
       exposedFilesPromise,
       openApiPromise,
       corsPromise,
+      adminPromise,
     ]);
     openApiResult = resolvedOpenApi;
     issues.push(...exposedIssues);
     issues.push(...openApiResult.issues);
     issues.push(...corsIssues);
+    issues.push(...adminIssues);
 
     for (const routePath of subRoutes) {
       const item = subRouteOutcomes.get(routePath);
