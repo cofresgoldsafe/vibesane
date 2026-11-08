@@ -36,6 +36,7 @@ export type SanityIssueKind =
   | 'slow_route'
   | 'syntax_error'
   | 'truncated_body'
+  | 'unauthenticated_admin_route'
   | 'unauthenticated_api_route';
 
 export interface SanityIssue {

@@ -2,13 +2,24 @@
 
 ## Status do Plano Ativo (2026-11-08)
 - **Versão atual no package.json:** `0.1.12` (GitHub Release `v0.1.12`)
-- **Branch:** `main`
+- **Branch:** `feat/admin-route-probe`
 - **Última tarefa concluída:** **Release v0.1.12 (Sonda Paralela de CORS Perigoso — `insecure_cors`)** — Implementação da detecção de servidores que espelham qualquer cabeçalho `Origin` com `Access-Control-Allow-Credentials: true` via sonda paralela isolada em `src/scanner/cors-probe.ts`. Crawler normal preservado sem contaminação de `Origin`. 211/211 testes passando, Red Team validado contra Express real e Starlette. PR #20 mergeado, tag `v0.1.12` criada, pacote `vibesane@0.1.12` publicado no npm e GitHub Release `v0.1.12` publicada.
-- **Próxima tarefa:** Planejamento e escrutínio dos próximos aprimoramentos.
+- **Tarefa em andamento (v0.1.13):** **Sonda Paralela de Áreas Administrativas Abertas (`unauthenticated_admin_route`)** — Implementação de verificação paralela e não-bloqueante em `/admin`, `/dashboard` e `/debug` via `src/scanner/admin-probe.ts`. Alerta apenas quando a rota responder HTTP 200 com conteúdo exclusivo e desprotegido, silenciando para redirecionamentos 3xx (ex.: `/login`), 401/403, páginas de login (`<input type="password">`) e cascas genéricas de SPA ou catch-all (comparadas contra a raiz e rota inexistente `/vibesane-missing-...`, com normalização de nonces CSP). Respostas contendo segredos acionam `secret_leak` adicional com exit code 1.
 
 ---
 
 ## Decisões Arquiteturais Travadas
+- **Sonda Paralela de Áreas Administrativas Abertas (`src/scanner/admin-probe.ts`, `src/scanner/route-crawler.ts` - v0.1.13):**
+  - **Motivação:** Áreas administrativas e de depuração (`/admin`, `/dashboard`, `/debug`) frequentemente sobem expostas sem autenticação em projetos vibe-coding. Contudo, em SPAs (Vite, CRA, Next.js catch-all) qualquer rota responde 200 com a mesma casca HTML (`index.html`), o que geraria falsos positivos severos se verificado cegamente.
+  - **Classificação Estrita de Severidade:** Emitido exclusivamente como `severity: 'warning'`, com exit code 0 e sem acionar `AI FIX PROMPT`.
+  - **Sonda Isolada e Paralela (`probeAdminRoutes`):** Testa concorrentemente a rota sentinela inexistente `/vibesane-missing-<8 hex>` e os caminhos fixos `ADMIN_PROBE_PATHS = ['/admin', '/dashboard', '/debug'] as const`, com `redirect: 'manual'`, sem credenciais (`credentials: 'omit'`), orçamento global e timeout individual de rota.
+  - **Critérios de Silêncio Absoluto (Zero Falso Positivo):**
+    1. Status diferente de 200 (3xx redirects para login, 401, 403, 404, 5xx).
+    2. Formulário de login: `looksLikeLoginPage(body)` detecta `<input ... type="password">` (case-insensitive, com ou sem aspas).
+    3. Casca universal de SPA ou Catch-all: `isSameAsFallback(body, [rootBody, missingBody])` compara o conteúdo após higienização de nonces CSP (`/\s+nonce\s*=\s*(?:'[^']*'|\x22[^\x22]*\x22|[^\s>]+)/gi`) e colapso de espaços em branco.
+    4. Timeout, erro de rede ou corpo cortado (`truncated`): silêncio total (não emite `slow_route`, `http_error` nem `truncated_body`).
+    5. Zero impacto em contadores de cobertura (`info: checked N pages, M scripts`).
+  - **Varredura Adicional de Segredos (`scanSecrets`):** Se a rota responder 200 com conteúdo próprio e contiver segredos reais em seu corpo (ex.: `/debug` JSON expondo tokens de serviço), emite `secret_leak` com `severity: 'error'` e exit code 1.
 - **Sonda Paralela de CORS Perigoso (`src/scanner/cors-probe.ts`, `src/scanner/route-crawler.ts` - v0.1.12):**
   - **Motivação:** O antipadrão de espelhamento arbitrário de `Origin` com `Access-Control-Allow-Credentials: true` (comum em Express `cors({ origin: true, credentials: true })` ou FastAPI/Starlette `allow_origins=['*']` com credentials) permite que qualquer website leia respostas com os cookies da vítima. `Access-Control-Allow-Origin: *` isolado ou com credentials não é vulnerável no navegador moderno e não é reportado.
   - **Isolamento de Origem no Crawler:** Requisições normais do crawler NUNCA incluem cabeçalho `Origin` (Next 15+ possui comportamento especial para requisições cross-origin em dev). A verificação é uma sonda isolada.
