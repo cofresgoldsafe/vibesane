@@ -18,6 +18,9 @@ export const SERVER_ENV_IN_CLIENT_INSTRUCTION =
 export const EXPOSED_FILE_INSTRUCTION =
   "Do not serve the project root as static files: serve only a dedicated public folder (e.g. express.static('public')), and rotate every key that was in the exposed file.";
 
+export const INSECURE_CORS_INSTRUCTION =
+  'Do not reflect the request Origin when credentials are allowed: configure an explicit allowlist of trusted origins in your CORS settings (e.g. cors({ origin: [ ... trusted origins ... ], credentials: true }) in Express, or allow_origins=[ ... ] instead of * or .* in FastAPI).';
+
 export const CODE_ERROR_INSTRUCTION =
   'Fix only the error pointed out above; do not refactor unrelated code.';
 
@@ -145,6 +148,7 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
     (err) => err.kind === 'server_env_in_client',
   );
   const hasExposedFile = uniqueErrors.some((err) => err.kind === 'exposed_file');
+  const hasInsecureCors = uniqueErrors.some((err) => err.kind === 'insecure_cors');
   const hasCodeError = uniqueErrors.some(
     (err) =>
       err.kind === 'http_error' ||
@@ -156,6 +160,7 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
     (hasSecretLeak ? 1 : 0) +
     (hasServerEnvInClient ? 1 : 0) +
     (hasExposedFile ? 1 : 0) +
+    (hasInsecureCors ? 1 : 0) +
     (hasCodeError ? 1 : 0);
 
   if (activeCategoriesCount === 1) {
@@ -165,6 +170,8 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
       lines.push(`Instruction: ${SERVER_ENV_IN_CLIENT_INSTRUCTION}`);
     } else if (hasExposedFile) {
       lines.push(`Instruction: ${EXPOSED_FILE_INSTRUCTION}`);
+    } else if (hasInsecureCors) {
+      lines.push(`Instruction: ${INSECURE_CORS_INSTRUCTION}`);
     } else if (hasCodeError) {
       lines.push(`Instruction: ${CODE_ERROR_INSTRUCTION}`);
     }
@@ -179,6 +186,9 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
     }
     if (hasExposedFile) {
       lines.push(`Instruction (exposed files): ${EXPOSED_FILE_INSTRUCTION}`);
+    }
+    if (hasInsecureCors) {
+      lines.push(`Instruction (cors): ${INSECURE_CORS_INSTRUCTION}`);
     }
     if (hasCodeError) {
       lines.push(`Instruction (code): ${CODE_ERROR_INSTRUCTION}`);

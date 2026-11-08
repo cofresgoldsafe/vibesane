@@ -59,10 +59,15 @@ async function runCli(argv) {
 
 describe('Sanity Scanner Engine (BDD)', () => {
   it('1. Zero duplo GET / e isenção de slow_route na raiz', async () => {
-    let rootHits = 0;
+    let crawlerRootHits = 0;
+    let corsProbeHits = 0;
     const srv = await startHttpServer((req, res) => {
       if (req.url === '/' || req.url === '') {
-        rootHits += 1;
+        if (req.headers.origin === 'https://vibesane-cors-probe.invalid') {
+          corsProbeHits += 1;
+        } else {
+          crawlerRootHits += 1;
+        }
         setTimeout(() => {
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end('<html><body><h1>Home</h1></body></html>');
@@ -75,7 +80,8 @@ describe('Sanity Scanner Engine (BDD)', () => {
 
     try {
       const res = await runVibesane({ port: srv.port, slowRouteMs: 50 });
-      assert.equal(rootHits, 1, 'Raiz / deve ser requisitada apenas uma vez');
+      assert.equal(crawlerRootHits, 1, 'Raiz / deve ser requisitada apenas uma vez pelo crawler');
+      assert.equal(corsProbeHits, 1, 'Sonda de CORS deve testar / exatamente uma vez');
       assert.equal(res.ok, true);
       assert.deepEqual(res.issues, []);
       assert.equal(res.routes.length, 1);

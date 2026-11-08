@@ -29,6 +29,7 @@ export type SanitySeverity = 'error' | 'warning';
 export type SanityIssueKind =
   | 'exposed_file'
   | 'http_error'
+  | 'insecure_cors'
   | 'masked_error'
   | 'secret_leak'
   | 'server_env_in_client'

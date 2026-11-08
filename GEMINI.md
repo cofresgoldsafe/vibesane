@@ -2,13 +2,20 @@
 
 ## Status do Plano Ativo (2026-11-08)
 - **Versão atual no package.json:** `0.1.11` (GitHub Release `v0.1.11`)
-- **Branch:** `main`
-- **Última tarefa concluída:** **Release v0.1.11 (Sonda Paralela de Variantes de `.env` e `/.git/config`)** — Expansão de `probeExposedFiles` para sondar em paralelo a lista `ENV_FILE_PATHS = ['/.env', '/.env.local', '/.env.production', '/.env.development']` junto com `/.git/config`. `inspectExposedEnvBody` parametrizado com `path: string = '/.env'`, gerando `Server exposes <path> (variables: ...)`. Descarte absoluto de HTML de SPA fallback, fail-open em 403/404/timeouts, zero vazamento de valores em detalhes ou AI Fix Prompt. 200/200 testes passando. PR #19 mergeado na `main`, tag `v0.1.11` enviada e GitHub Release `v0.1.11` criada.
-- **Próxima tarefa:** Finalizar publicação no npm (`npm publish --otp=...`) e avançar para melhorias seguintes.
+- **Branch:** `feat/insecure-cors` (preparando v0.1.12)
+- **Última tarefa concluída:** **Implementação da Regra de CORS Perigoso (`insecure_cors`)** — Criação do módulo `src/scanner/cors-probe.ts`, disparo em paralelo via `probeCors` em `route-crawler.ts`, registro do literal `'insecure_cors'` em `SanityIssueKind`, instrução ordenada `INSECURE_CORS_INSTRUCTION` no `AI FIX PROMPT`, documentação no README.md e bateria de testes dedicada em `test/cors-probe.test.mjs`.
+- **Próxima tarefa:** Finalizar verificação adversarial (Fase 4), PR, merge, tag `v0.1.12` e publicação no npm.
 
 ---
 
 ## Decisões Arquiteturais Travadas
+- **Sonda Paralela de CORS Perigoso (`src/scanner/cors-probe.ts`, `src/scanner/route-crawler.ts` - v0.1.12):**
+  - **Motivação:** O antipadrão de espelhamento arbitrário de `Origin` com `Access-Control-Allow-Credentials: true` (comum em Express `cors({ origin: true, credentials: true })` ou FastAPI/Starlette `allow_origins=['*']` com credentials) permite que qualquer website leia respostas com os cookies da vítima. `Access-Control-Allow-Origin: *` isolado ou com credentials não é vulnerável no navegador moderno e não é reportado.
+  - **Isolamento de Origem no Crawler:** Requisições normais do crawler NUNCA incluem cabeçalho `Origin` (Next 15+ possui comportamento especial para requisições cross-origin em dev). A verificação é uma sonda isolada.
+  - **Sonda Dedicada (`probeCors`):** Testa em paralelo `CORS_PROBE_PATHS = ['/', '/api'] as const` enviando `Origin: https://vibesane-cors-probe.invalid` e `Cookie: vibesane_cors_probe=1`, com `redirect: 'manual'`, orçamento global e timeout individual de rota.
+  - **Função Pura (`isReflectedCredentialedCors`):** Retorna `true` apenas se `access-control-allow-origin` (trim, case-insensitive) casar com `probeOrigin` E `access-control-allow-credentials` (trim, minúsculo) for estritamente `'true'`.
+  - **Fail-Open e Zero Impacto:** Descarta o corpo sem ler (`res.body?.cancel()`). Qualquer status code HTTP (incluindo 3xx e 404) é inspecionado (middlewares aplicam CORS neles). Em caso de timeout ou erro de rede: silêncio absoluto (não gera `slow_route` nem `http_error`). Não altera a contagem de páginas inspecionadas.
+  - **Instrução no AI FIX PROMPT:** `INSECURE_CORS_INSTRUCTION` entra na 4ª posição da ordem canônica (secrets -> server env in client -> exposed files -> cors -> code).
 - **Sonda de Rotas de API Descobertas pelo /openapi.json (`src/scanner/route-crawler.ts`, `src/index.ts` - v0.1.10):**
   - **Motivação:** Servidores puramente de API (como FastAPI no caso real do `pipedrive-mcp`) expõem endpoints GET sem autenticação que devolvem dados sensíveis ou segredos. Como APIs não servem HTML com tags `<a href>`, o crawler tradicional não encontra essas sub-rotas.
   - **Descoberta Segura de `/openapi.json`:** Requisição `GET /openapi.json` na mesma origem com `redirect: 'manual'`, orçamento global e timeout de rota. Exige status 200 e `Content-Type` contendo `json`. Leitura limitada a 1 MB (`MAX_OPENAPI_BYTES = 1024 * 1024`). Fail-open absoluto: 404, HTML (SPA fallback), JSON inválido, timeout ou erro de rede silenciam sem emitir nenhuma issue.
