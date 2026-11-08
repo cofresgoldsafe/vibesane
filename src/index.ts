@@ -158,6 +158,7 @@ export interface VibesaneResult extends PortDetectionResult {
   issues: SanityIssue[];
   aiPrompt: string | null;
   message: string;
+  probedApiRoutes: string[];
 }
 
 function validateSanityScanOptions(options: SanityScanOptions): void {
@@ -277,6 +278,7 @@ function formatScanMessage(
   skippedRoutes: readonly string[],
   routes: readonly RouteScanItem[],
   scannedScripts: readonly string[],
+  probedApiRoutes: readonly string[] = [],
 ): string {
   const alsoSuffix =
     detection.alsoActivePorts.length > 0
@@ -284,6 +286,10 @@ function formatScanMessage(
       : '';
   const baseLine = `vibesane: connected to ${detection.url} (${detection.elapsedMs}ms)${alsoSuffix}`;
   const coverageLine = determineCoverageLine(detection, routes, scannedScripts, warnings);
+  const probedLine =
+    probedApiRoutes.length > 0
+      ? `info: probed ${probedApiRoutes.length === 1 ? '1 GET route' : `${probedApiRoutes.length} GET routes`} listed in /openapi.json`
+      : null;
 
   if (ok) {
     const lines = [baseLine];
@@ -291,6 +297,9 @@ function formatScanMessage(
       lines.push(`warning [${w.kind}]: ${stripViteTimestampQuery(w.detail)}`);
     }
     lines.push(coverageLine);
+    if (probedLine) {
+      lines.push(probedLine);
+    }
     if (skippedRoutes.length > 0) {
       lines.push(
         `info: ${skippedRoutes.length} route(s) not checked (time budget reached): ${skippedRoutes.join(', ')}`,
@@ -310,6 +319,9 @@ function formatScanMessage(
     lines.push(`warning [${w.kind}]: ${stripViteTimestampQuery(w.detail)}`);
   }
   lines.push(coverageLine);
+  if (probedLine) {
+    lines.push(probedLine);
+  }
   if (skippedRoutes.length > 0) {
     lines.push(
       `info: ${skippedRoutes.length} route(s) not checked (time budget reached): ${skippedRoutes.join(', ')}`,
@@ -346,6 +358,7 @@ export async function runVibesane(options: VibesaneOptions = {}): Promise<Vibesa
       issues: [],
       aiPrompt: null,
       message,
+      probedApiRoutes: [],
     };
   }
 
@@ -373,6 +386,7 @@ export async function runVibesane(options: VibesaneOptions = {}): Promise<Vibesa
     scan.skippedRoutes,
     scan.routes,
     scan.scannedScripts,
+    scan.probedApiRoutes,
   );
   const aiPrompt = generateAiFixPrompt({
     ok,
@@ -390,5 +404,6 @@ export async function runVibesane(options: VibesaneOptions = {}): Promise<Vibesa
     issues: normalizedIssues,
     aiPrompt,
     message,
+    probedApiRoutes: scan.probedApiRoutes,
   };
 }

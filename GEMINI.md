@@ -1,14 +1,39 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.9` (publicada no npm e GitHub Release `v0.1.9`)
-- **Branch:** `main`
-- **Última tarefa concluída:** **Release v0.1.9 (Linha de Cobertura Honesta em Servidor só de API / Respostas JSON)** — `determineCoverageLine` em `src/index.ts` separa respostas JSON (`Content-Type` contendo `json`) de páginas HTML. Quando o servidor é só de API (`checkedPagesCount === 0 && checkedJsonCount >= 1`), emite `info: checked N JSON response(s) (API-only server: only HTTP status and secrets in the response were checked)`. Quando híbrido, emite `info: checked N page(s), M script(s), K JSON response(s)`. Respostas JSON contam como checadas (não ativam `nothing was checked`). 184/184 testes passando, Red Team real validado em portas 8765-8767 contra a v0.1.8, PR #17 mergeado, Release v0.1.9 criada no GitHub e publicada no npm. O `/seg` do Antigravity já aceita `checked N JSON response(s)`.
-- **Próxima tarefa:** **Melhoria nº 3 (Sonda /openapi.json, v0.1.10)** — Especificação e desenvolvimento da sonda para descoberta e validação de `/openapi.json` em servidores de API.
+- **Versão atual no package.json:** `0.1.9` (branch `feat/openapi-probe` pronta para v0.1.10)
+- **Branch:** `feat/openapi-probe`
+- **Última tarefa concluída:** **Melhoria nº 3 (Sonda /openapi.json, v0.1.10)** — Sonda de rotas GET descobertas em `/openapi.json` sem autenticação. Filtros rigorosos anti-SSRF/host-injection (`isSameLocalOrigin`), exclusão de verbos de ação (`cron`, `run`, etc.), path params `{id}`, query params obrigatórios (`required: true` ou `$ref`) e rotas reservadas (`/health`, `/docs`, etc.). Limite de até 5 rotas. Kind `unauthenticated_api_route` como `warning` (exit code 0). Varredura de segredos no corpo 200 JSON via `scanSecrets` (gerando `secret_leak` error). Campo público `probedApiRoutes: string[]` em `SanityScanSummary` e `VibesaneResult`. Linha de saída `info: probed N GET route(s) listed in /openapi.json` compatível com `/seg`. 196/196 testes passando e Red Team real validado em servidor FastAPI na porta 8790.
+- **Próxima tarefa:** Revisão de PR, merge na `main` e publicação da release `v0.1.10`.
 
 ---
 
 ## Decisões Arquiteturais Travadas
+- **Sonda de Rotas de API Descobertas pelo /openapi.json (`src/scanner/route-crawler.ts`, `src/index.ts` - v0.1.10):**
+  - **Motivação:** Servidores puramente de API (como FastAPI no caso real do `pipedrive-mcp`) expõem endpoints GET sem autenticação que devolvem dados sensíveis ou segredos. Como APIs não servem HTML com tags `<a href>`, o crawler tradicional não encontra essas sub-rotas.
+  - **Descoberta Segura de `/openapi.json`:** Requisição `GET /openapi.json` na mesma origem com `redirect: 'manual'`, orçamento global e timeout de rota. Exige status 200 e `Content-Type` contendo `json`. Leitura limitada a 1 MB (`MAX_OPENAPI_BYTES = 1024 * 1024`). Fail-open absoluto: 404, HTML (SPA fallback), JSON inválido, timeout ou erro de rede silenciam sem emitir nenhuma issue.
+  - **Filtragem Estrita e Segurança Anti-SSRF:**
+    - Chave de path deve começar com `/` e **não** com `//`.
+    - Validação de mesma origem local via helper `isSameLocalOrigin(candidate, baseUrl)` de `route-crawler.ts` (rejeita `//host-externo`, URLs absolutas externas).
+    - Rejeita parâmetros de caminho (`{id}`).
+    - Rejeita parâmetros obrigatórios (`required: true`) ou referenciados (`$ref`) no nível do path (`pathItem.parameters`) ou da operação (`pathItem.get.parameters`).
+    - Rejeita rotas de infraestrutura e documentação: `/`, `/health`, `/healthz`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json`.
+    - Rejeita segmentos com potencial de mutação/efeito colateral mesmo em GET: `cron`, `run`, `trigger`, `exec`, `execute`, `sync`, `send`, `delete`, `remove`, `reset`, `logout`, `restart`, `shutdown`, `migrate`, `seed`, `import`.
+    - Teto estrito: máximo de 5 rotas elegíveis (`MAX_PROBED_API_ROUTES = 5`) na ordem do documento.
+    - NUNCA testa métodos mutáveis (`POST`, `PUT`, `DELETE`, `PATCH`).
+  - **Execução e Contagem Honesta:**
+    - Dispara `GET` sem cabeçalhos de autenticação e sem cookies (`credentials: 'omit'`).
+    - Contagem honesta: a rota só é adicionada a `probedApiRoutes` se receber resposta HTTP real (qualquer status code). Rotas abortadas por timeout ou falha de conexão antes dos cabeçalhos não contam.
+    - Se a resposta for 200 com `Content-Type` contendo `json`: emite `kind: 'unauthenticated_api_route'` com `severity: 'warning'` e detalhe `GET <rota> answered 200 JSON without credentials (listed in /openapi.json); if it is not meant to be public, require authentication`. Nunca expõe o corpo da resposta no detalhe.
+    - Se o status for 401, 403, 404, 422, 5xx: silêncio absoluto (não gera `http_error` nem `slow_route`).
+  - **Varredura de Segredos no Corpo (`scanSecrets`):**
+    - Quando a rota responder 200 JSON, lê o corpo via `readBoundedTextBody` (teto de 1 MB, timeout 500 ms) e roda `scanSecrets`. Se contiver segredos, emite `secret_leak` com `severity: 'error'` e exit code 1.
+  - **Evolução da API Pública (`probedApiRoutes: string[]`):**
+    - Adicionado o campo `probedApiRoutes: string[]` em `SanityScanSummary` e `VibesaneResult` no mesmo padrão de `skippedRoutes: string[]`, permitindo que consumidores programáticos e ferramentas de orquestração inspecionem as rotas do OpenAPI que foram efetivamente testadas.
+    - Nenhuma função nova exportada em `src/index.ts`.
+  - **Linha de Saída Dedicada:**
+    - Quando `probedApiRoutes.length > 0`, emite `info: probed N GET route(s) listed in /openapi.json` imediatamente após a linha de cobertura (`coverageLine`), tanto em scans com sucesso quanto em scans com falha.
+    - Formatação desacoplada e 100% compatível com a regex do `/seg` (`run-seg.ps1`), sem colidir com `checkedLine`.
 - **Linha de Cobertura Honesta para Servidores de API e Respostas JSON (`src/index.ts` - v0.1.9):**
   - **Motivação:** Em servidores exclusivos de API (FastAPI, Express com JSON) ou endpoints JSON, reportar `info: checked 1 page, 0 scripts` prometia mais do que o scanner realizava (não há DOM nem scripts de cliente).
   - **Classificação:** `determineCoverageLine` classifica as rotas elegíveis (`!r.skipped && r.statusCode !== undefined && !(r.statusCode >= 300 && r.statusCode < 400)`) em:

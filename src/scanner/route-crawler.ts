@@ -53,6 +53,7 @@ export interface SanityScanSummary {
   scannedScripts: string[];
   skippedRoutes: string[];
   issues: SanityIssue[];
+  probedApiRoutes: string[];
 }
 
 const ANCHOR_HREF_RE = /<a\b[^>]*?\bhref\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/gi;
@@ -808,6 +809,245 @@ async function probeExposedFiles(
   return issues;
 }
 
+export const MAX_OPENAPI_BYTES = 1024 * 1024;
+export const MAX_PROBED_API_ROUTES = 5;
+
+const IGNORED_OPENAPI_PATHS = new Set([
+  '/',
+  '/health',
+  '/healthz',
+  '/docs',
+  '/docs/oauth2-redirect',
+  '/redoc',
+  '/openapi.json',
+]);
+
+const IGNORED_ACTION_SEGMENTS = new Set([
+  'cron',
+  'run',
+  'trigger',
+  'exec',
+  'execute',
+  'sync',
+  'send',
+  'delete',
+  'remove',
+  'reset',
+  'logout',
+  'restart',
+  'shutdown',
+  'migrate',
+  'seed',
+  'import',
+]);
+
+function isRequiredOrRef(p: unknown): boolean {
+  if (typeof p !== 'object' || p === null) {
+    return false;
+  }
+  const record = p as Record<string, unknown>;
+  return Boolean(record.$ref || record.required === true);
+}
+
+export function extractEligibleOpenApiGetRoutes(
+  rawJson: string,
+  baseOrigin: string,
+): string[] {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(rawJson);
+  } catch {
+    return [];
+  }
+
+  if (typeof doc !== 'object' || doc === null) {
+    return [];
+  }
+
+  const paths = (doc as Record<string, unknown>).paths;
+  if (typeof paths !== 'object' || paths === null) {
+    return [];
+  }
+
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(baseOrigin);
+  } catch {
+    return [];
+  }
+
+  const eligible: string[] = [];
+
+  for (const rawPath of Object.keys(paths)) {
+    if (eligible.length >= MAX_PROBED_API_ROUTES) {
+      break;
+    }
+
+    if (
+      typeof rawPath !== 'string' ||
+      !rawPath.startsWith('/') ||
+      rawPath.startsWith('//') ||
+      rawPath.includes('{')
+    ) {
+      continue;
+    }
+
+    let resolved: URL;
+    try {
+      resolved = new URL(rawPath, baseUrl);
+    } catch {
+      continue;
+    }
+
+    if (!isSameLocalOrigin(resolved, baseUrl)) {
+      continue;
+    }
+
+    const normalizedPath = resolved.pathname;
+
+    if (IGNORED_OPENAPI_PATHS.has(normalizedPath.toLowerCase())) {
+      continue;
+    }
+
+    const segments = normalizedPath
+      .split('/')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
+    const hasActionSegment = segments.some((seg) => IGNORED_ACTION_SEGMENTS.has(seg));
+    if (hasActionSegment) {
+      continue;
+    }
+
+    const pathItem = (paths as Record<string, unknown>)[rawPath];
+    if (typeof pathItem !== 'object' || pathItem === null) {
+      continue;
+    }
+
+    const getOp = (pathItem as Record<string, unknown>).get;
+    if (typeof getOp !== 'object' || getOp === null) {
+      continue;
+    }
+
+    // Check path-level parameters
+    const pathParams = (pathItem as Record<string, unknown>).parameters;
+    if (Array.isArray(pathParams) && pathParams.some(isRequiredOrRef)) {
+      continue;
+    }
+
+    // Check operation-level parameters
+    const opParams = (getOp as Record<string, unknown>).parameters;
+    if (Array.isArray(opParams) && opParams.some(isRequiredOrRef)) {
+      continue;
+    }
+
+    eligible.push(normalizedPath);
+  }
+
+  return eligible;
+}
+
+async function probeOpenApiRoutes(
+  baseOrigin: string,
+  signal: AbortSignal,
+  routeTimeoutMs: number,
+): Promise<{ issues: SanityIssue[]; probedRoutes: string[] }> {
+  const issues: SanityIssue[] = [];
+  const probedRoutes: string[] = [];
+
+  let openApiUrl: URL;
+  try {
+    openApiUrl = new URL('/openapi.json', baseOrigin);
+  } catch {
+    return { issues, probedRoutes };
+  }
+
+  const hopSignal = AbortSignal.any([signal, AbortSignal.timeout(routeTimeoutMs)]);
+  let rawDoc = '';
+  try {
+    const res = await fetch(openApiUrl.toString(), {
+      method: 'GET',
+      redirect: 'manual',
+      signal: hopSignal,
+    });
+    const contentType = res.headers.get('content-type') ?? '';
+    if (res.status !== 200 || !contentType.toLowerCase().includes('json')) {
+      await res.body?.cancel().catch(() => {});
+      return { issues, probedRoutes };
+    }
+    const snap = await readBoundedTextBody(
+      res,
+      MAX_OPENAPI_BYTES,
+      DEFAULT_BODY_READ_TIMEOUT_MS,
+    );
+    rawDoc = snap.body;
+  } catch {
+    return { issues, probedRoutes };
+  }
+
+  if (!rawDoc) {
+    return { issues, probedRoutes };
+  }
+
+  const eligibleRoutes = extractEligibleOpenApiGetRoutes(rawDoc, baseOrigin);
+  if (eligibleRoutes.length === 0) {
+    return { issues, probedRoutes };
+  }
+
+  for (const routePath of eligibleRoutes) {
+    if (signal.aborted) {
+      break;
+    }
+
+    let targetUrl: URL;
+    try {
+      targetUrl = new URL(routePath, baseOrigin);
+    } catch {
+      continue;
+    }
+
+    const routeSignal = AbortSignal.any([signal, AbortSignal.timeout(routeTimeoutMs)]);
+    try {
+      const res = await fetch(targetUrl.toString(), {
+        method: 'GET',
+        redirect: 'manual',
+        signal: routeSignal,
+        credentials: 'omit',
+      });
+
+      // Contagem honesta: só conta se recebeu resposta HTTP real (qualquer status)
+      probedRoutes.push(routePath);
+
+      const contentType = res.headers.get('content-type') ?? '';
+      if (res.status === 200 && contentType.toLowerCase().includes('json')) {
+        const snap = await readBoundedTextBody(
+          res,
+          MAX_BODY_BYTES,
+          DEFAULT_BODY_READ_TIMEOUT_MS,
+        );
+
+        issues.push({
+          kind: 'unauthenticated_api_route',
+          severity: 'warning',
+          route: routePath,
+          statusCode: 200,
+          detail: `GET ${routePath} answered 200 JSON without credentials (listed in /openapi.json); if it is not meant to be public, require authentication`,
+        });
+
+        if (snap.body.length > 0) {
+          issues.push(...scanSecrets(snap.body, routePath));
+        }
+      } else {
+        await res.body?.cancel().catch(() => {});
+      }
+    } catch {
+      // Timeout, cancelamento ou falha de rede: silêncio absoluto e não conta como probed
+    }
+  }
+
+  return { issues, probedRoutes };
+}
+
 export async function runSanityScan(
   host: LoopbackHost,
   port: number,
@@ -843,6 +1083,10 @@ export async function runSanityScan(
   const scannedScripts: string[] = [];
   const skippedRoutes: string[] = [];
   const issues: SanityIssue[] = [];
+  let openApiResult: { issues: SanityIssue[]; probedRoutes: string[] } = {
+    issues: [],
+    probedRoutes: [],
+  };
   const crawlStart = performance.now();
 
   const budgetController = new AbortController();
@@ -1284,6 +1528,11 @@ export async function runSanityScan(
       budgetController.signal,
       routeTimeoutMs,
     );
+    const openApiPromise = probeOpenApiRoutes(
+      baseOrigin,
+      budgetController.signal,
+      routeTimeoutMs,
+    );
 
     for (const scriptPath of candidateScripts) {
       enqueueScriptTask(scriptPath);
@@ -1296,8 +1545,13 @@ export async function runSanityScan(
     pump();
     await poolDone;
 
-    const exposedIssues = await exposedFilesPromise;
+    const [exposedIssues, resolvedOpenApi] = await Promise.all([
+      exposedFilesPromise,
+      openApiPromise,
+    ]);
+    openApiResult = resolvedOpenApi;
     issues.push(...exposedIssues);
+    issues.push(...openApiResult.issues);
 
     for (const routePath of subRoutes) {
       const item = subRouteOutcomes.get(routePath);
@@ -1317,5 +1571,6 @@ export async function runSanityScan(
     scannedScripts,
     skippedRoutes,
     issues,
+    probedApiRoutes: openApiResult.probedRoutes,
   };
 }
