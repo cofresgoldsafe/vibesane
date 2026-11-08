@@ -45,7 +45,7 @@
     "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
-    "test": "node --test test/cli.test.mjs test/port-detector.test.mjs test/sanity-scanner.test.mjs test/reporter.test.mjs test/rules.test.mjs test/syntax-check.test.mjs test/exposed-files.test.mjs test/openapi-probe.test.mjs test/cors-probe.test.mjs test/admin-probe.test.mjs test/unsafe-html.test.mjs",
+    "test": "node --test test/cli.test.mjs test/port-detector.test.mjs test/sanity-scanner.test.mjs test/reporter.test.mjs test/rules.test.mjs test/syntax-check.test.mjs test/exposed-files.test.mjs test/openapi-probe.test.mjs test/cors-probe.test.mjs test/admin-probe.test.mjs test/unsafe-html.test.mjs test/insecure-form.test.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm test"
   },

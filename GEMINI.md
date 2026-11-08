@@ -1,14 +1,30 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.14` (GitHub Release `v0.1.14`)
-- **Branch:** `main`
-- **Última tarefa concluída:** **Release v0.1.14 (Regra de Injeção de HTML Cru sem Sanitizador — `unsanitized_html`)** — Implementação de detecção de sinks perigosos de HTML cru (`dangerouslySetInnerHTML`, `.innerHTML =`, `.outerHTML =`, `.insertAdjacentHTML(`) no código do projeto via `src/rules/unsafe-html.ts` e `src/scanner/unsafe-html-scan.ts`. Emite exclusivamente `severity: 'warning'`, com exit code 0 e sem AI Fix Prompt. Utiliza resolução de fronteiras de módulo para descartar `node_modules` (evitando falso positivo em `react-dom`) e silencia na presença de sanitizadores (`DOMPurify`, `sanitize`, `xss`), literais estáticos de string (`isStaticHtmlLiteral`), comparações lógicas (`==`, `===`) e bundles minificados de produção sem fronteiras fora de `/src/`. 236/236 testes passando, Red Team validado contra Vite 8 e Next 16 (Webpack e Turbopack). PR #22 rebaseado e mergeado, tag `v0.1.14` criada, pacote `vibesane@0.1.14` publicado no npm e GitHub Release `v0.1.14` publicada.
-- **Próxima tarefa:** Planejamento e escrutínio dos próximos aprimoramentos.
+- **Versão atual no package.json:** `0.1.14` (branch `feat/insecure-form-method`)
+- **Branch:** `feat/insecure-form-method`
+- **Última tarefa concluída:** **Regra de Formulário com Método Inseguro (`insecure_form_method`)** — Detecção de formulários HTML servidos pelo backend com `method="get"` contendo campo de senha (`<input type="password">`). Emite `severity: 'error'` e exit code 1, acionando o AI Fix Prompt com instrução de código.
+- **Próxima tarefa:** Verificação adversarial, testes automatizados e aprovação para PR.
 
 ---
 
 ## Decisões Arquiteturais Travadas
+- **Detecção de Formulário Inseguro com Método GET e Senha (`src/rules/insecure-form.ts`, `src/scanner/route-crawler.ts`):**
+  - **Motivação:** A submissão de senha via GET anexa a credencial na Query String da URL, vazando no histórico do navegador, logs de servidores e proxies, e no cabeçalho `Referer` (CWE-598).
+  - **Classificação:** Emitido como `kind: 'insecure_form_method'`, `severity: 'error'`, exit code `1`. Aciona o AI Fix Prompt integrado em `hasCodeError`.
+  - **Escopo Linear e Pré-Limpeza:**
+    1. Remove previamente comentários HTML (`<!--[\s\S]*?(?:-->|$)`) e scripts inline (`<script\b[^>]*>[\s\S]*?(?:<\/script\s*>|$)`).
+    2. Localiza tags de abertura `<form\b([^>]*)>`.
+    3. Fatiamento linear do corpo do form do fim da tag `<form ...>` até o primeiro entre `</form>`, próximo `<form\b` ou EOF (suportando HTML truncado).
+  - **Critérios de Silêncio Absoluto (Zero Falso Positivo):**
+    1. Formulários sem atributo `method` (padrão em React/Next com `onSubmit`).
+    2. Formulários com `method="post"` ou `method="dialog"`.
+    3. Formulários com `method="get"` que não possuem campos de senha (ex.: busca).
+    4. Atributos data: rejeita `data-method="get"` e `data-type="password"` exigindo `(?:^|\s)` antes do nome do atributo (`/(?:^|\s)method\s*=/i` e `/(?:^|\s)type\s*=/i`).
+    5. `<input type="password">` solto fora de tags `<form>`.
+    6. Inputs com `name="password"` mas `type="text"`, ou `type="passwordx"`.
+  - **Snippet Seguro:** `maskedSnippet` extrai exclusivamente a tag de abertura `<form ...>`, passada por `toAsciiSafe` e limitada a no máximo 160 caracteres (157 + `...`). Não aplica `redactSecret` na tag inteira.
+  - **Limite Honesto:** Aplica-se ao HTML servido pelo servidor (SSR Next/Nuxt, Express, Flask, PHP). Em SPAs puras montadas 100% no cliente sem HTML inicial, o formulário não é visto no crawl HTTP inicial.
 - **Detecção de HTML Cru sem Sanitizador no Cliente (`src/rules/unsafe-html.ts`, `src/scanner/unsafe-html-scan.ts` - v0.1.14):**
   - **Motivação:** A injeção de HTML não sanitizado no cliente (XSS) é frequente quando dados vêm de APIs, Markdown ou LLMs. No entanto, o `react-dom` contém internamente a string `dangerouslySetInnerHTML`, o que dispararia falso positivo em qualquer aplicação React se a verificação fosse ingênua.
   - **Classificação Estrita:** Emitido exclusivamente como `severity: 'warning'`, exit code 0 e `aiPrompt: null`.

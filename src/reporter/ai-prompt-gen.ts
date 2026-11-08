@@ -153,7 +153,8 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
     (err) =>
       err.kind === 'http_error' ||
       err.kind === 'masked_error' ||
-      err.kind === 'syntax_error',
+      err.kind === 'syntax_error' ||
+      err.kind === 'insecure_form_method',
   );
 
   const activeCategoriesCount =
