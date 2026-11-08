@@ -21,6 +21,7 @@ import {
   type SanityIssue,
 } from './security-scan.js';
 import { checkScriptSyntax } from './syntax-check.js';
+import { probeCors } from './cors-probe.js';
 
 export const DEFAULT_SCAN_BUDGET_MS = 2500;
 export const DEFAULT_ROUTE_TIMEOUT_MS = 2000;
@@ -1550,6 +1551,11 @@ export async function runSanityScan(
       budgetController.signal,
       routeTimeoutMs,
     );
+    const corsPromise = probeCors(
+      baseOrigin,
+      budgetController.signal,
+      routeTimeoutMs,
+    );
 
     for (const scriptPath of candidateScripts) {
       enqueueScriptTask(scriptPath);
@@ -1562,13 +1568,15 @@ export async function runSanityScan(
     pump();
     await poolDone;
 
-    const [exposedIssues, resolvedOpenApi] = await Promise.all([
+    const [exposedIssues, resolvedOpenApi, corsIssues] = await Promise.all([
       exposedFilesPromise,
       openApiPromise,
+      corsPromise,
     ]);
     openApiResult = resolvedOpenApi;
     issues.push(...exposedIssues);
     issues.push(...openApiResult.issues);
+    issues.push(...corsIssues);
 
     for (const routePath of subRoutes) {
       const item = subRouteOutcomes.get(routePath);

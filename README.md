@@ -10,6 +10,7 @@ Preflight sanity check for vibe-coded web apps, typically under 3 seconds. Zero 
 - **Script Syntax Check:** Compiles application JavaScript files and ES modules (compile only, never executed) to catch unclosed brackets, duplicate identifiers, or missing files that return HTML instead of JS.
 - **Secret Leaks & Supabase Keys:** Scans responses and application scripts for high-entropy tokens, Stripe keys, database URIs with passwords, Supabase `service_role` keys (masked as `eyJ****` + last 2 chars; ignoring `anon`), Supabase secret keys (`sb_secret_*`; ignoring `sb_publishable_*`), and private environment variables.
 - **Exposed Files (`.env` variants & `/.git/config`):** Detects if dev servers or static servers expose sensitive root files (kind `exposed_file`), probing `/.env`, `/.env.local`, `/.env.production`, `/.env.development`, and `/.git/config` in parallel. For env files, lists up to 5 variable names while **strictly guaranteeing that secret values never appear** in details, snippets, code frames, or AI prompts. For `/.git/config`, flags exposed git history without leaking remote URLs.
+- **Insecure CORS (Origin Reflection with Credentials):** Probes `/` and `/api` with an untrusted probe origin and cookie. Detects if the server dynamically mirrors any request `Origin` with `Access-Control-Allow-Credentials: true` (e.g. Express `cors({ origin: true, credentials: true })` or FastAPI `allow_origins=['*']` with credentials), allowing malicious sites to read private responses with user cookies.
 
 ## Quickstart
 
@@ -95,6 +96,7 @@ Instruction (code): Fix only the error pointed out above; do not refactor unrela
 - **Masked Error Overlays on `200 OK`:** Detects Next.js and Vite runtime/compile error overlays hidden inside `200 OK` HTML responses, including Next 16 RSC/Flight error payloads and Vite/Oxc code frames.
 - **Client-Side Secret Leaks:** Scans HTML and JS bundles for exposed secrets (`sk_live_*`, `sk_test_*`, `rk_live_*`, `rk_test_*`, `AIzaSy*`, `ghp_*`, `sk-proj-*`, `sk-ant-*`, `sb_secret_*`, Supabase `service_role` JWTs, `*_SECRET`, `*_PRIVATE_KEY`, `DATABASE_URL` with credentials, and hardcoded `password`/`senha` assignments), resolving the original source file inside Turbopack and Webpack chunks while ignoring public keys (`pk_live_*`, `pk_test_*`, `sb_publishable_*`, `NEXT_PUBLIC_*`, `VITE_*` (except Supabase service_role JWTs, which are flagged even in NEXT_PUBLIC_* / VITE_*), and Supabase `anon` / `authenticated` keys).
 - **Exposed Files Detection:** Parallel non-blocking probe for sensitive root files (`/.env`, `/.env.local`, `/.env.production`, `/.env.development`, and `/.git/config`) when the project root is mistakenly exposed. Fails safe and silent on 403, 404, or SPA fallback.
+- **Insecure CORS Detection:** Parallel non-blocking probe on `/` and `/api` with probe origin and cookie. Flags servers mirroring the request `Origin` when credentials are permitted (`error [insecure_cors]`, exit code `1`), while ignoring safe configurations (`Access-Control-Allow-Origin: *` without credentials or fixed origin allowlists).
 - **OpenAPI Unauthenticated Routes:** Discovers parameterless `GET` routes listed in `/openapi.json` (such as in FastAPI), probes up to 5 routes for unauthenticated `200` JSON responses (`warning [unauthenticated_api_route]`), and scans their bodies for leaked secrets.
 - **API-Only Root Handling:** Treats a root `/` returning `404` with a JSON `Content-Type` (API-only server) as an advisory `warning [http_error]` (exit code `0`) instead of an error.
 - **Slow Routes:** Flags routes taking `> 1500ms` to return headers as `warning [slow_route]`.
@@ -122,6 +124,7 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 - **Server Environment References in Client Strings:** Detects `.env.VAR_NAME` statically via regex in client bundles. Literal strings or user-facing error messages containing such patterns (e.g. `"check your process.env.DATABASE_URL"`) in client components will also trigger `server_env_in_client`.
 - **API-Only Servers:** On servers returning JSON at `/` (no HTML), checks only HTTP status and secrets in the response; reports `info: checked 1 JSON response (API-only server: only HTTP status and secrets in the response were checked)`.
 - **API Authentication Testing:** Only tests parameterless `GET` routes discovered in `/openapi.json` (such as in FastAPI); does not fuzz `POST`/`PUT`/`DELETE`, test custom parameters, or inspect APIs without an OpenAPI specification (Express and Next.js typically do not publish `/openapi.json` by default).
+- **CORS Probe Scope:** Checks only `/` and `/api` (where CORS middlewares are typically configured). CORS policies scoped exclusively to other routes (e.g. `/v1/users`) without covering `/` or `/api` are not tested.
 - **HTML-Based Route Discovery:** Discovers sub-routes from `<a href="...">` links rendered in the HTML of `/`. In pure client-side SPAs where `<div id="root"></div>` is empty and routes exist only inside a client-side router, `vibesane` inspects `/` and up to 5 application JS modules (`/src/*`), but does not navigate client-only routes absent from initial HTML.
 - **No Authentication / Session State:** Protected routes redirecting to external login providers are skipped; same-origin redirects are followed up to 3 hops.
 - **Deterministic Caps:** Enforces a `2.5s` global crawl budget, up to `10` routes, `5` scripts, `1 MB` per HTML page, and `8 MB` per script.
@@ -141,7 +144,7 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 | Code | Meaning |
 | :--- | :--- |
 | `0` | All sanity checks passed (including non-fatal warnings) |
-| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`, `server_env_in_client`, `syntax_error`, `exposed_file`) or no local HTTP server found |
+| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`, `server_env_in_client`, `syntax_error`, `exposed_file`, `insecure_cors`) or no local HTTP server found |
 | `2` | CLI usage error (invalid flag or invalid `--port` value) |
 
 ## License
