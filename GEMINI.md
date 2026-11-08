@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.10`
-- **Branch:** `feat/probe-env-files`
-- **Última tarefa concluída:** **Sonda Paralela de Variantes de `.env` (`/.env`, `/.env.local`, `/.env.production`, `/.env.development`) e `/.git/config`** — Expansão de `probeExposedFiles` para sondar em paralelo a lista `ENV_FILE_PATHS = ['/.env', '/.env.local', '/.env.production', '/.env.development']` junto com `/.git/config`. `inspectExposedEnvBody` parametrizado com `path: string = '/.env'`, gerando `Server exposes <path> (variables: ...)`. Descarte absoluto de HTML de SPA fallback, fail-open em 403/404/timeouts, zero vazamento de valores em detalhes ou AI Fix Prompt. 200/200 testes passando.
-- **Próxima tarefa:** Validação adversarial e revisão antes de PR / release.
+- **Versão atual no package.json:** `0.1.11` (GitHub Release `v0.1.11`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.11 (Sonda Paralela de Variantes de `.env` e `/.git/config`)** — Expansão de `probeExposedFiles` para sondar em paralelo a lista `ENV_FILE_PATHS = ['/.env', '/.env.local', '/.env.production', '/.env.development']` junto com `/.git/config`. `inspectExposedEnvBody` parametrizado com `path: string = '/.env'`, gerando `Server exposes <path> (variables: ...)`. Descarte absoluto de HTML de SPA fallback, fail-open em 403/404/timeouts, zero vazamento de valores em detalhes ou AI Fix Prompt. 200/200 testes passando. PR #19 mergeado na `main`, tag `v0.1.11` enviada e GitHub Release `v0.1.11` criada.
+- **Próxima tarefa:** Finalizar publicação no npm (`npm publish --otp=...`) e avançar para melhorias seguintes.
 
 ---
 
