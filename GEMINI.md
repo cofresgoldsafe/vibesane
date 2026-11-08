@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.13` (em desenvolvimento para `0.1.14`)
-- **Branch:** `feat/unsanitized-html`
-- **Última tarefa concluída:** **Regra de Injeção de HTML Cru sem Sanitizador (`unsanitized_html` - v0.1.14)** — Implementação de detecção de sinks perigosos de HTML cru (`dangerouslySetInnerHTML`, `.innerHTML =`, `.outerHTML =`, `.insertAdjacentHTML(`) no código do projeto via `src/rules/unsafe-html.ts` e `src/scanner/unsafe-html-scan.ts`. Emite exclusivamente `severity: 'warning'`, com exit code 0 e sem AI Fix Prompt. Utiliza resolução de fronteiras de módulo para descartar `node_modules` (evitando falso positivo em `react-dom`) e silencia na presença de sanitizadores (`DOMPurify`, `sanitize`, `xss`), literais estáticos de string (`isStaticHtmlLiteral`), comparações lógicas (`==`, `===`) e bundles minificados de produção sem fronteiras fora de `/src/`.
-- **Próxima tarefa:** Verificação adversarial, testes e Red Team.
+- **Versão atual no package.json:** `0.1.14` (GitHub Release `v0.1.14`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.14 (Regra de Injeção de HTML Cru sem Sanitizador — `unsanitized_html`)** — Implementação de detecção de sinks perigosos de HTML cru (`dangerouslySetInnerHTML`, `.innerHTML =`, `.outerHTML =`, `.insertAdjacentHTML(`) no código do projeto via `src/rules/unsafe-html.ts` e `src/scanner/unsafe-html-scan.ts`. Emite exclusivamente `severity: 'warning'`, com exit code 0 e sem AI Fix Prompt. Utiliza resolução de fronteiras de módulo para descartar `node_modules` (evitando falso positivo em `react-dom`) e silencia na presença de sanitizadores (`DOMPurify`, `sanitize`, `xss`), literais estáticos de string (`isStaticHtmlLiteral`), comparações lógicas (`==`, `===`) e bundles minificados de produção sem fronteiras fora de `/src/`. 236/236 testes passando, Red Team validado contra Vite 8 e Next 16 (Webpack e Turbopack). PR #22 rebaseado e mergeado, tag `v0.1.14` criada, pacote `vibesane@0.1.14` publicado no npm e GitHub Release `v0.1.14` publicada.
+- **Próxima tarefa:** Planejamento e escrutínio dos próximos aprimoramentos.
 
 ---
 
