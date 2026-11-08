@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.8` (em desenvolvimento para `0.1.9`)
-- **Branch:** `feat/api-coverage-line`
-- **Última tarefa concluída:** **Melhoria nº 2 da v0.1.9 (Linha de Cobertura Honesta em Servidor só de API / Respostas JSON)** — `determineCoverageLine` em `src/index.ts` separa respostas JSON (`Content-Type` contendo `json`) de páginas HTML. Quando o servidor é só de API (`checkedPagesCount === 0 && checkedJsonCount >= 1`), emite `info: checked N JSON response(s) (API-only server: only HTTP status and secrets in the response were checked)`. Quando híbrido, emite `info: checked N page(s), M script(s), K JSON response(s)`. Respostas JSON contam como checadas (não ativam `nothing was checked`). 184/184 testes passando, Red Team real validado em portas 8765-8767 contra a v0.1.8 publicada.
-- **Próxima tarefa:** Atualização de compatibilidade no `/seg` (`run-seg.ps1` e documentação de skills) antes do publish, bump para `0.1.9`, merge do PR e publicação oficial.
+- **Versão atual no package.json:** `0.1.9` (publicada no npm e GitHub Release `v0.1.9`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.9 (Linha de Cobertura Honesta em Servidor só de API / Respostas JSON)** — `determineCoverageLine` em `src/index.ts` separa respostas JSON (`Content-Type` contendo `json`) de páginas HTML. Quando o servidor é só de API (`checkedPagesCount === 0 && checkedJsonCount >= 1`), emite `info: checked N JSON response(s) (API-only server: only HTTP status and secrets in the response were checked)`. Quando híbrido, emite `info: checked N page(s), M script(s), K JSON response(s)`. Respostas JSON contam como checadas (não ativam `nothing was checked`). 184/184 testes passando, Red Team real validado em portas 8765-8767 contra a v0.1.8, PR #17 mergeado, Release v0.1.9 criada no GitHub e publicada no npm. O `/seg` do Antigravity já aceita `checked N JSON response(s)`.
+- **Próxima tarefa:** **Melhoria nº 3 (Sonda /openapi.json, v0.1.10)** — Especificação e desenvolvimento da sonda para descoberta e validação de `/openapi.json` em servidores de API.
 
 ---
 
@@ -19,9 +19,9 @@
     2. Só JSON (`checkedPagesCount === 0 && checkedJsonCount >= 1`): `info: checked N JSON response(s) (API-only server: only HTTP status and secrets in the response were checked)` (omite o segmento de scripts).
     3. Misto (`checkedPagesCount >= 1 && checkedJsonCount >= 1`): `info: checked N page(s), M script(s), K JSON response(s)`.
     4. Nothing was checked (`checkedPagesCount === 0 && checkedJsonCount === 0`): JSON conta como checado, então `nothing was checked` só ocorre quando ambas as contagens são 0.
-  - **Checagens Reais sobre JSON:** Status HTTP e busca de segredos no payload via `scanSecrets`. O predicado `isHtmlLike` decide por `text/html`, `application/xhtml+xml` ou corpo começando com `<!doctype` ou `<html` após trim (para JSON normal dá `false`, de modo que `detectMaskedError` não roda em corpos JSON).
+  - **Checagens Reais sobre JSON:** Status HTTP e busca de segredos no payload via `scanSecrets`. O predicado `isHtmlLike` dá `true` para `text/html`, `application/xhtml+xml` ou corpo que começa com `<` após trim (qualquer `<`, não só `<!doctype` e `<html`). Para JSON normal não começando com `<`, dá `false`, de modo que `detectMaskedError` não roda em corpos JSON.
   - **Inexistência Prática de 2 JSON e 0 Páginas:** O crawler descobre sub-rotas exclusivamente por links `<a href="...">` em HTML (`extractInternalLinks`). Em um servidor puro de API com raiz JSON, não há links DOM para o crawler seguir; logo, o scanner visita apenas a raiz (`1 JSON response`). O plural de JSON ocorre em servidores híbridos (página HTML com links para múltiplos endpoints JSON).
-  - **Compatibilidade do `/seg` (`run-seg.ps1`):** Antes do publish da 0.1.9, o script do `/seg` deve aceitar `checked N JSON response` para aprovar auditorias em APIs sem gerar falso INCONCLUSIVO.
+  - **Compatibilidade do `/seg` (`run-seg.ps1`):** O script do `/seg` já foi atualizado e aceita `checked N JSON response(s)` para aprovar auditorias em APIs sem gerar falso INCONCLUSIVO.
 - **Tratamento de Raiz 404 JSON para Servidores de API (`src/scanner/route-crawler.ts`):**
   - Quando a rota raiz `/` responde com status final exatamente `404` e cabeçalho `Content-Type` contendo `json` (ex.: `application/json`, `application/problem+json`), o vibesane emite `kind: 'http_error'` com `severity: 'warning'` e detalhe `/ returned 404 JSON; looks like an API-only server, nothing to check at /`.
   - O código de saída permanece `0` (`EXIT_CODES.OK`) e `aiPrompt` permanece `null`.
