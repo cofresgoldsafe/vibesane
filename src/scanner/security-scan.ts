@@ -34,7 +34,8 @@ export type SanityIssueKind =
   | 'server_env_in_client'
   | 'slow_route'
   | 'syntax_error'
-  | 'truncated_body';
+  | 'truncated_body'
+  | 'unauthenticated_api_route';
 
 export interface SanityIssue {
   kind: SanityIssueKind;

@@ -289,6 +289,71 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
       }
     });
 
+    it('execFile assíncrono: reporta rota GET descoberta pelo /openapi.json com aviso e contagem correta', async () => {
+      const execFileAsync = promisify(execFile);
+      const srv = await new Promise((resolve, reject) => {
+        const server = createServer((req, res) => {
+          if (req.url === '/') {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ detail: 'Not Found' }));
+            return;
+          }
+          if (req.url === '/openapi.json') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                paths: {
+                  '/api/v1/ping': { get: {} },
+                },
+              }),
+            );
+            return;
+          }
+          if (req.url === '/api/v1/ping') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ message: 'pong' }));
+            return;
+          }
+          res.writeHead(404);
+          res.end();
+        });
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          const addr = server.address();
+          const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+          resolve({
+            port,
+            close: () =>
+              new Promise((resClose) => {
+                server.closeAllConnections?.();
+                server.close(() => resClose());
+              }),
+          });
+        });
+      });
+
+      try {
+        const { stdout } = await execFileAsync(
+          process.execPath,
+          ['bin/vibesane.js', '--port', String(srv.port)],
+          { encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } },
+        );
+
+        assert.ok(
+          stdout.includes(
+            'warning [unauthenticated_api_route]: GET /api/v1/ping answered 200 JSON without credentials (listed in /openapi.json); if it is not meant to be public, require authentication',
+          ),
+          'Deve exibir o aviso de rota unauthenticated_api_route',
+        );
+        assert.ok(
+          stdout.includes('info: probed 1 GET route listed in /openapi.json'),
+          'Deve exibir a linha info: probed 1 GET route...',
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
     it('bin/vibesane.js possui quebras de linha LF e shebang válido', () => {
       const raw = readFileSync('bin/vibesane.js', 'utf8');
       assert.ok(!raw.includes('\r\n'), 'bin/vibesane.js não deve conter CRLF (\\r\\n)');
