@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.14` (branch `feat/insecure-form-method`)
-- **Branch:** `feat/insecure-form-method`
-- **Última tarefa concluída:** **Regra de Formulário com Método Inseguro (`insecure_form_method`)** — Detecção de formulários HTML servidos pelo backend com `method="get"` contendo campo de senha (`<input type="password">`). Emite `severity: 'error'` e exit code 1, acionando o AI Fix Prompt com instrução de código.
-- **Próxima tarefa:** Verificação adversarial, testes automatizados e aprovação para PR.
+- **Versão atual no package.json:** `0.1.15` (GitHub Release `v0.1.15`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.15 (Regra de Formulário com Método Inseguro — `insecure_form_method`)** — Detecção de formulários HTML servidos pelo backend com `method="get"` contendo campo de senha (`<input type="password">`). Emite `severity: 'error'` e exit code 1, acionando o AI Fix Prompt com instrução de código. Implementação com O(n) estrito com pré-corte no último `>` e busca de escopo indexada, silenciando em formulários sem `method` (padrão React/Next client-side), forms `post`/`dialog`, forms de busca, atributos `data-method`/`data-type`, comentários e scripts inline. 263/263 testes passando. PR #23 rebaseado e mergeado, tag `v0.1.15` criada e GitHub Release `v0.1.15` publicada.
+- **Próxima tarefa:** Planejamento e escrutínio dos próximos aprimoramentos.
 
 ---
 
