@@ -198,7 +198,7 @@ function determineCoverageLine(
   scannedScripts: readonly string[],
   warnings: readonly SanityIssue[],
 ): string {
-  const checkedPagesCount = routes.filter((r) => {
+  const candidateRoutes = routes.filter((r) => {
     if (r.skipped || r.statusCode === undefined) {
       return false;
     }
@@ -206,11 +206,25 @@ function determineCoverageLine(
       return false;
     }
     return true;
-  }).length;
+  });
+
+  let checkedPagesCount = 0;
+  let checkedJsonCount = 0;
+
+  for (const r of candidateRoutes) {
+    const isJson =
+      typeof r.contentType === 'string' &&
+      r.contentType.toLowerCase().includes('json');
+    if (isJson) {
+      checkedJsonCount++;
+    } else {
+      checkedPagesCount++;
+    }
+  }
 
   const checkedScriptsCount = scannedScripts.length;
 
-  if (checkedPagesCount === 0) {
+  if (checkedPagesCount === 0 && checkedJsonCount === 0) {
     const hasRootSlowRoute = warnings.some(
       (w) => w.kind === 'slow_route' && w.route === '/',
     );
@@ -241,7 +255,18 @@ function determineCoverageLine(
 
   const pageLabel = checkedPagesCount === 1 ? '1 page' : `${checkedPagesCount} pages`;
   const scriptLabel = checkedScriptsCount === 1 ? '1 script' : `${checkedScriptsCount} scripts`;
-  return `info: checked ${pageLabel}, ${scriptLabel}`;
+  const jsonLabel =
+    checkedJsonCount === 1 ? '1 JSON response' : `${checkedJsonCount} JSON responses`;
+
+  if (checkedPagesCount === 0) {
+    return `info: checked ${jsonLabel} (API-only server: only HTTP status and secrets in the response were checked)`;
+  }
+
+  if (checkedJsonCount === 0) {
+    return `info: checked ${pageLabel}, ${scriptLabel}`;
+  }
+
+  return `info: checked ${pageLabel}, ${scriptLabel}, ${jsonLabel}`;
 }
 
 function formatScanMessage(

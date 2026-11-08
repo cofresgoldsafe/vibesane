@@ -275,8 +275,10 @@ describe('vibesane CLI & Programmatic API (BDD)', () => {
           'Deve exibir o aviso de API-only server',
         );
         assert.ok(
-          stdout.includes('info: checked 1 page, 0 scripts'),
-          'Deve exibir linha de cobertura consistente',
+          stdout.includes(
+            'info: checked 1 JSON response (API-only server: only HTTP status and secrets in the response were checked)',
+          ),
+          'Deve exibir linha de cobertura honesta para servidor de API',
         );
         assert.ok(
           !stdout.includes('AI FIX PROMPT'),

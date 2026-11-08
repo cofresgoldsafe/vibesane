@@ -1907,7 +1907,11 @@ describe('Sanity Scanner Engine (BDD)', () => {
           '/ returned 404 JSON; looks like an API-only server, nothing to check at /',
         );
         assert.ok(res.message.includes('warning [http_error]: / returned 404 JSON; looks like an API-only server, nothing to check at /'));
-        assert.ok(res.message.includes('info: checked 1 page, 0 scripts'));
+        assert.ok(
+          res.message.includes(
+            'info: checked 1 JSON response (API-only server: only HTTP status and secrets in the response were checked)',
+          ),
+        );
 
         const cliRes = await runCli(['--port', String(srv.port)]);
         assert.equal(cliRes.code, EXIT_CODES.OK);
@@ -2070,6 +2074,148 @@ describe('Sanity Scanner Engine (BDD)', () => {
         assert.equal(subRouteIssue.kind, 'http_error');
         assert.equal(subRouteIssue.severity, 'error');
         assert.equal(subRouteIssue.statusCode, 404);
+      } finally {
+        await srv.close();
+      }
+    });
+  });
+
+  describe('16. Linha de cobertura honesta em servidor só de API e respostas JSON (v0.1.9)', () => {
+    it('16a. Servidor só de API com raiz 200 JSON: info: checked 1 JSON response (...) e exit code 0', async () => {
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ status: 'ok', version: '1.0.0' }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.equal(res.issues.length, 0);
+        assert.ok(
+          res.message.includes(
+            'info: checked 1 JSON response (API-only server: only HTTP status and secrets in the response were checked)',
+          ),
+          'Deve exibir linha de cobertura honesta para servidor só de API',
+        );
+
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, 0);
+        assert.ok(
+          cliRes.stdout.includes(
+            'info: checked 1 JSON response (API-only server: only HTTP status and secrets in the response were checked)',
+          ),
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('16b. Servidor só de API com segredo vazado em JSON 200: detecta secret_leak e mantém linha honesta', async () => {
+      const fakeApiKey = ['sk', 'live', '1234567890abcdef1234567890abcdef'].join('_');
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              status: 'ok',
+              apiKey: fakeApiKey,
+            }),
+          );
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, false);
+        const secretIssue = res.issues.find((i) => i.kind === 'secret_leak');
+        assert.ok(secretIssue, 'Deve detectar segredo no JSON');
+        assert.ok(
+          res.message.includes(
+            'info: checked 1 JSON response (API-only server: only HTTP status and secrets in the response were checked)',
+          ),
+        );
+
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, 1);
+        assert.ok(
+          cliRes.stdout.includes(
+            'info: checked 1 JSON response (API-only server: only HTTP status and secrets in the response were checked)',
+          ),
+        );
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('16c. Servidor híbrido com página HTML e sub-rota JSON: info: checked 1 page, 0 scripts, 1 JSON response', async () => {
+      const html = '<!DOCTYPE html><html><body><a href="/api/health">Health</a></body></html>';
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(html);
+          return;
+        }
+        if (req.url === '/api/health') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ healthy: true }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.ok(
+          res.message.includes('info: checked 1 page, 0 scripts, 1 JSON response'),
+          'Deve exibir contagem combinada de páginas, scripts e JSON',
+        );
+
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, 0);
+        assert.ok(cliRes.stdout.includes('info: checked 1 page, 0 scripts, 1 JSON response'));
+      } finally {
+        await srv.close();
+      }
+    });
+
+    it('16d. Servidor híbrido com página HTML e 2 sub-rotas JSON: info: checked 1 page, 0 scripts, 2 JSON responses (plural)', async () => {
+      const html = '<!DOCTYPE html><html><body><a href="/api/v1">V1</a><a href="/api/v2">V2</a></body></html>';
+      const srv = await startHttpServer((req, res) => {
+        if (req.url === '/') {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(html);
+          return;
+        }
+        if (req.url === '/api/v1' || req.url === '/api/v2') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ version: req.url }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      try {
+        const res = await runVibesane({ port: srv.port });
+        assert.equal(res.ok, true);
+        assert.ok(
+          res.message.includes('info: checked 1 page, 0 scripts, 2 JSON responses'),
+          'Deve exibir plural de JSON responses',
+        );
+
+        const cliRes = await runCli(['--port', String(srv.port)]);
+        assert.equal(cliRes.code, 0);
+        assert.ok(cliRes.stdout.includes('info: checked 1 page, 0 scripts, 2 JSON responses'));
       } finally {
         await srv.close();
       }
