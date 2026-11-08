@@ -582,11 +582,21 @@ function isHtmlLike(contentType: string, body: string): boolean {
 }
 
 export const MAX_EXPOSED_FILE_BYTES = 64 * 1024;
+export const ENV_FILE_PATHS = [
+  '/.env',
+  '/.env.local',
+  '/.env.production',
+  '/.env.development',
+] as const;
 const ENV_FIRST_USEFUL_LINE_RE = /^(?:export\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*=/;
 const ENV_VAR_NAMES_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*=/gm;
 const GIT_CONFIG_CORE_LINE_RE = /^\s*\[core\]/m;
 
-export function inspectExposedEnvBody(body: string, contentType: string): string | null {
+export function inspectExposedEnvBody(
+  body: string,
+  contentType: string,
+  path: string = '/.env',
+): string | null {
   if (!body) {
     return null;
   }
@@ -637,7 +647,7 @@ export function inspectExposedEnvBody(body: string, contentType: string): string
       ? `${shown.join(', ')} and ${remaining} more`
       : shown.join(', ');
 
-  return `Server exposes /.env (variables: ${formattedVars})`;
+  return `Server exposes ${path} (variables: ${formattedVars})`;
 }
 
 export function inspectExposedGitConfigBody(body: string, contentType: string): boolean {
@@ -778,20 +788,27 @@ async function probeExposedFiles(
 ): Promise<SanityIssue[]> {
   const issues: SanityIssue[] = [];
 
-  const [envSnap, gitSnap] = await Promise.all([
-    fetchExposedFileSnapshot(baseOrigin, '/.env', signal, routeTimeoutMs),
+  const [envSnapshots, gitSnap] = await Promise.all([
+    Promise.all(
+      ENV_FILE_PATHS.map(async (envPath) => {
+        const snap = await fetchExposedFileSnapshot(baseOrigin, envPath, signal, routeTimeoutMs);
+        return { envPath, snap };
+      }),
+    ),
     fetchExposedFileSnapshot(baseOrigin, '/.git/config', signal, routeTimeoutMs),
   ]);
 
-  if (envSnap && envSnap.statusCode === 200) {
-    const detail = inspectExposedEnvBody(envSnap.body, envSnap.contentType);
-    if (detail) {
-      issues.push({
-        kind: 'exposed_file',
-        severity: 'error',
-        route: '/.env',
-        detail,
-      });
+  for (const { envPath, snap } of envSnapshots) {
+    if (snap && snap.statusCode === 200) {
+      const detail = inspectExposedEnvBody(snap.body, snap.contentType, envPath);
+      if (detail) {
+        issues.push({
+          kind: 'exposed_file',
+          severity: 'error',
+          route: envPath,
+          detail,
+        });
+      }
     }
   }
 

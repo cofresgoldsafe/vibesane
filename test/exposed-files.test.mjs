@@ -5,6 +5,7 @@ import { runVibesane, EXIT_CODES } from '../dist/index.js';
 import {
   inspectExposedEnvBody,
   inspectExposedGitConfigBody,
+  ENV_FILE_PATHS,
 } from '../dist/scanner/route-crawler.js';
 import {
   generateAiFixPrompt,
@@ -52,6 +53,23 @@ describe('Exposed Files Scanner (/.env & /.git/config) — v0.1.6', () => {
     assert.ok(!detail.includes('another_secret_pass'));
     assert.ok(!detail.includes('extra_secret'));
     assert.ok(!detail.includes('final_secret'));
+  });
+
+  it('unit: ENV_FILE_PATHS contains the 4 expected sensitive env files', () => {
+    assert.deepEqual(ENV_FILE_PATHS, [
+      '/.env',
+      '/.env.local',
+      '/.env.production',
+      '/.env.development',
+    ]);
+  });
+
+  it('unit: inspectExposedEnvBody supports custom path (e.g. /.env.local, /.env.production)', () => {
+    const envContent = 'SECRET_TOKEN=xyz123\nFOO=bar\n';
+    const detailLocal = inspectExposedEnvBody(envContent, 'text/plain', '/.env.local');
+    assert.equal(detailLocal, 'Server exposes /.env.local (variables: SECRET_TOKEN, FOO)');
+    const detailProd = inspectExposedEnvBody(envContent, 'text/plain', '/.env.production');
+    assert.equal(detailProd, 'Server exposes /.env.production (variables: SECRET_TOKEN, FOO)');
   });
 
   it('unit: inspectExposedEnvBody ignores empty file, comments-only, and HTML content', () => {
@@ -205,6 +223,92 @@ describe('Exposed Files Scanner (/.env & /.git/config) — v0.1.6', () => {
       assert.equal(result.issues.filter((i) => i.kind === 'exposed_file').length, 0);
       assert.equal(result.issues.filter((i) => i.kind === 'truncated_body').length, 0);
       assert.match(result.message, /info: checked 1 page, 0 scripts/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('negative: server responding 200 text/html (SPA fallback) for /.env.local and /.env.production emits zero issues and exit code 0', async () => {
+    const spaHtml = '<!DOCTYPE html><html><head><title>SPA</title></head><body><div id="app">SPA fallback content</div></body></html>';
+
+    const server = await startServer((req, res) => {
+      // SPA fallback responding 200 text/html for /.env.local, /.env.production and all other routes
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(spaHtml);
+    });
+
+    try {
+      const result = await runVibesane({ port: server.port });
+      assert.equal(result.ok, true);
+      assert.equal(result.issues.filter((i) => i.kind === 'exposed_file').length, 0);
+      assert.equal(result.issues.filter((i) => i.severity === 'error').length, 0);
+      assert.equal(result.aiPrompt, null);
+      assert.match(result.message, /info: checked 1 page, 0 scripts/);
+
+      // Confirm no variable names or spurious exposed text appear
+      const fullOutput = `${result.message}\n${result.aiPrompt ?? ''}`;
+      assert.ok(!fullOutput.includes('Server exposes'));
+      assert.ok(!fullOutput.includes('variables:'));
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('detects exposed /.env.local and /.env.production and verifies ZERO secret values appear in report or AI prompt', async () => {
+    const envLocalPayload = [
+      '# Local overrides',
+      'NEXT_PUBLIC_API_URL=https://api.example.com',
+      'SECRET_KEY=sk_live_verysecretlocal999',
+    ].join('\n');
+    const envProdPayload = [
+      '# Production secrets',
+      'DATABASE_URL=postgres://prod_user:SuperSecretProdPass123@prod-db:5432/db',
+    ].join('\n');
+
+    const server = await startServer((req, res) => {
+      if (req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<!DOCTYPE html><html><body><h1>Safe App</h1></body></html>');
+      } else if (req.url === '/.env.local') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(envLocalPayload);
+      } else if (req.url === '/.env.production') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(envProdPayload);
+      } else {
+        res.writeHead(404);
+        res.end('Not found');
+      }
+    });
+
+    try {
+      const result = await runVibesane({ port: server.port });
+      assert.equal(result.ok, false);
+      const exposed = result.issues.filter((i) => i.kind === 'exposed_file');
+      assert.equal(exposed.length, 2);
+
+      const localIssue = exposed.find((i) => i.route === '/.env.local');
+      assert.ok(localIssue);
+      assert.equal(localIssue.severity, 'error');
+      assert.equal(
+        localIssue.detail,
+        'Server exposes /.env.local (variables: NEXT_PUBLIC_API_URL, SECRET_KEY)',
+      );
+
+      const prodIssue = exposed.find((i) => i.route === '/.env.production');
+      assert.ok(prodIssue);
+      assert.equal(prodIssue.severity, 'error');
+      assert.equal(
+        prodIssue.detail,
+        'Server exposes /.env.production (variables: DATABASE_URL)',
+      );
+
+      // ZERO secret values appear in message or AI fix prompt
+      const fullOutput = `${result.message}\n${result.aiPrompt ?? ''}`;
+      assert.ok(!fullOutput.includes('sk_live_verysecretlocal999'));
+      assert.ok(!fullOutput.includes('SuperSecretProdPass123'));
+      assert.ok(!fullOutput.includes('prod_user'));
+      assert.ok(result.aiPrompt?.includes(EXPOSED_FILE_INSTRUCTION));
     } finally {
       await server.close();
     }
