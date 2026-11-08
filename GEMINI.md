@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.12` (GitHub Release `v0.1.12`)
-- **Branch:** `feat/admin-route-probe`
-- **Última tarefa concluída:** **Release v0.1.12 (Sonda Paralela de CORS Perigoso — `insecure_cors`)** — Implementação da detecção de servidores que espelham qualquer cabeçalho `Origin` com `Access-Control-Allow-Credentials: true` via sonda paralela isolada em `src/scanner/cors-probe.ts`. Crawler normal preservado sem contaminação de `Origin`. 211/211 testes passando, Red Team validado contra Express real e Starlette. PR #20 mergeado, tag `v0.1.12` criada, pacote `vibesane@0.1.12` publicado no npm e GitHub Release `v0.1.12` publicada.
-- **Tarefa em andamento (v0.1.13):** **Sonda Paralela de Áreas Administrativas Abertas (`unauthenticated_admin_route`)** — Implementação de verificação paralela e não-bloqueante em `/admin`, `/dashboard` e `/debug` via `src/scanner/admin-probe.ts`. Alerta apenas quando a rota responder HTTP 200 com conteúdo exclusivo e desprotegido, silenciando para redirecionamentos 3xx (ex.: `/login`), 401/403, páginas de login (`<input type="password">`) e cascas genéricas de SPA ou catch-all (comparadas contra a raiz e rota inexistente `/vibesane-missing-...`, com normalização de nonces CSP). Respostas contendo segredos acionam `secret_leak` adicional com exit code 1.
+- **Versão atual no package.json:** `0.1.13` (GitHub Release `v0.1.13`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.13 (Sonda Paralela de Áreas Administrativas Abertas — `unauthenticated_admin_route`)** — Implementação de verificação paralela e não-bloqueante em `/admin`, `/dashboard` e `/debug` via `src/scanner/admin-probe.ts`. Alerta apenas quando a rota responder HTTP 200 com conteúdo exclusivo e desprotegido, silenciando para redirecionamentos 3xx (ex.: `/login`), 401/403, páginas de login (`<input type="password">`) e cascas genéricas de SPA ou catch-all (comparadas contra a raiz e rota inexistente `/vibesane-missing-...`, com normalização de nonces CSP em 3 formatos e mascaramento de caminho refletido via `maskOwnPath`). Respostas contendo segredos acionam `secret_leak` adicional com exit code 1. 224/224 testes passando, Red Team validado contra Express real, Vite 8 e Next 16. PR #21 mergeado, tag `v0.1.13` criada, pacote `vibesane@0.1.13` publicado no npm e GitHub Release `v0.1.13` publicada.
+- **Próxima tarefa:** Planejamento e escrutínio dos próximos aprimoramentos.
 
 ---
 
