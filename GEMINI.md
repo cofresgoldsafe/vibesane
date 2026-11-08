@@ -1,14 +1,26 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.13` (GitHub Release `v0.1.13`)
-- **Branch:** `main`
-- **Última tarefa concluída:** **Release v0.1.13 (Sonda Paralela de Áreas Administrativas Abertas — `unauthenticated_admin_route`)** — Implementação de verificação paralela e não-bloqueante em `/admin`, `/dashboard` e `/debug` via `src/scanner/admin-probe.ts`. Alerta apenas quando a rota responder HTTP 200 com conteúdo exclusivo e desprotegido, silenciando para redirecionamentos 3xx (ex.: `/login`), 401/403, páginas de login (`<input type="password">`) e cascas genéricas de SPA ou catch-all (comparadas contra a raiz e rota inexistente `/vibesane-missing-...`, com normalização de nonces CSP em 3 formatos e mascaramento de caminho refletido via `maskOwnPath`). Respostas contendo segredos acionam `secret_leak` adicional com exit code 1. 224/224 testes passando, Red Team validado contra Express real, Vite 8 e Next 16. PR #21 mergeado, tag `v0.1.13` criada, pacote `vibesane@0.1.13` publicado no npm e GitHub Release `v0.1.13` publicada.
-- **Próxima tarefa:** Planejamento e escrutínio dos próximos aprimoramentos.
+- **Versão atual no package.json:** `0.1.13` (em desenvolvimento para `0.1.14`)
+- **Branch:** `feat/unsanitized-html`
+- **Última tarefa concluída:** **Regra de Injeção de HTML Cru sem Sanitizador (`unsanitized_html` - v0.1.14)** — Implementação de detecção de sinks perigosos de HTML cru (`dangerouslySetInnerHTML`, `.innerHTML =`, `.outerHTML =`, `.insertAdjacentHTML(`) no código do projeto via `src/rules/unsafe-html.ts` e `src/scanner/unsafe-html-scan.ts`. Emite exclusivamente `severity: 'warning'`, com exit code 0 e sem AI Fix Prompt. Utiliza resolução de fronteiras de módulo para descartar `node_modules` (evitando falso positivo em `react-dom`) e silencia na presença de sanitizadores (`DOMPurify`, `sanitize`, `xss`), literais estáticos de string (`isStaticHtmlLiteral`), comparações lógicas (`==`, `===`) e bundles minificados de produção sem fronteiras fora de `/src/`.
+- **Próxima tarefa:** Verificação adversarial, testes e Red Team.
 
 ---
 
 ## Decisões Arquiteturais Travadas
+- **Detecção de HTML Cru sem Sanitizador no Cliente (`src/rules/unsafe-html.ts`, `src/scanner/unsafe-html-scan.ts` - v0.1.14):**
+  - **Motivação:** A injeção de HTML não sanitizado no cliente (XSS) é frequente quando dados vêm de APIs, Markdown ou LLMs. No entanto, o `react-dom` contém internamente a string `dangerouslySetInnerHTML`, o que dispararia falso positivo em qualquer aplicação React se a verificação fosse ingênua.
+  - **Classificação Estrita:** Emitido exclusivamente como `severity: 'warning'`, exit code 0 e `aiPrompt: null`.
+  - **Isolamento de Código do Projeto:** O scanner identifica o arquivo de origem original via `extractModuleBoundaries` e `findModuleBoundaryIndex` (exportados internamente de `security-scan.ts`). Módulos dentro de `node_modules` (`isThirdParty: true`) são descartados silenciosamente.
+  - **Critério para Scripts sem Fronteiras:** Só é inspecionado se a rota começar com `/src/` (padrão de arquivos individuais do Vite em desenvolvimento). Bundles empacotados sem fronteiras fora de `/src/` (ex.: `/assets/index-xxx.js` em produção) são ignorados para não acusar o runtime do React.
+  - **Regex Ancorada em Literais Raros:** `UNSAFE_HTML_SINK_RE = /(?:(dangerouslySetInnerHTML)|\.(innerHTML|outerHTML)\s*=(?!=)|\.(insertAdjacentHTML)\s*\()/g` ancorada em caracteres literais fixos, garantindo O(n) estrito (< 5ms em 2 MB) e zero backtracking.
+  - **Critérios de Silêncio:**
+    1. Presença de sanitizador no mesmo módulo (`SANITIZER_HINT_RE = /dompurify|sanitize|purify|\bxss\b/i`).
+    2. Atribuição de literal estático em `innerHTML` e `outerHTML` (`isStaticHtmlLiteral`), suportando strings simples com `'`, `"`, `` ` `` (sem `${...}`), inclusive com aspas escapadas de eval do Webpack (`\'`, `\"`).
+    3. Comparações lógicas (`el.innerHTML == ''`, `el.innerHTML === ''`).
+    4. Scripts minificados sem fronteiras fora de `/src/`.
+  - **Deduplicação:** Deduplica por par `(file, sink)`. Detalhe emitido nunca reflete código do usuário: `Raw HTML is injected with ${sink} in ${file} and no sanitizer (e.g. DOMPurify) appears in that file; if this HTML can come from users, an API or an LLM, it is an XSS risk`.
 - **Sonda Paralela de Áreas Administrativas Abertas (`src/scanner/admin-probe.ts`, `src/scanner/route-crawler.ts` - v0.1.13):**
   - **Motivação:** Áreas administrativas e de depuração (`/admin`, `/dashboard`, `/debug`) frequentemente sobem expostas sem autenticação em projetos vibe-coding. Contudo, em SPAs (Vite, CRA, Next.js catch-all) qualquer rota responde 200 com a mesma casca HTML (`index.html`), o que geraria falsos positivos severos se verificado cegamente.
   - **Classificação Estrita de Severidade:** Emitido exclusivamente como `severity: 'warning'`, com exit code 0 e sem acionar `AI FIX PROMPT`.

@@ -23,6 +23,7 @@ import {
 import { checkScriptSyntax } from './syntax-check.js';
 import { probeCors } from './cors-probe.js';
 import { probeAdminRoutes } from './admin-probe.js';
+import { scanUnsafeHtml } from './unsafe-html-scan.js';
 
 export const DEFAULT_SCAN_BUDGET_MS = 2500;
 export const DEFAULT_ROUTE_TIMEOUT_MS = 2000;
@@ -1353,6 +1354,7 @@ export async function runSanityScan(
           if (snap.body.length > 0) {
             issues.push(...scanSecrets(snap.body, cleanScriptPath));
             issues.push(...scanServerEnv(snap.body, cleanScriptPath));
+            issues.push(...scanUnsafeHtml(snap.body, cleanScriptPath));
           }
 
           if (
