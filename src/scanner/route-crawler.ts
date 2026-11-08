@@ -24,6 +24,7 @@ import { checkScriptSyntax } from './syntax-check.js';
 import { probeCors } from './cors-probe.js';
 import { probeAdminRoutes } from './admin-probe.js';
 import { scanUnsafeHtml } from './unsafe-html-scan.js';
+import { detectInsecureFormMethod } from '../rules/insecure-form.js';
 
 export const DEFAULT_SCAN_BUDGET_MS = 2500;
 export const DEFAULT_ROUTE_TIMEOUT_MS = 2000;
@@ -1241,6 +1242,7 @@ export async function runSanityScan(
       }
     } else if (!isFinalRootRedirect && isHtmlLike(finalRoot.contentType, finalRoot.body)) {
       issues.push(...detectMaskedError(finalRoot.body, '/'));
+      issues.push(...detectInsecureFormMethod(finalRoot.body, '/'));
     }
 
     if (!isFinalRootRedirect && finalRoot.body.length > 0) {
@@ -1496,6 +1498,7 @@ export async function runSanityScan(
             }
           } else if (!isSubRouteRedirect && isHtmlLike(snap.contentType, snap.body)) {
             issues.push(...detectMaskedError(snap.body, routePath));
+            issues.push(...detectInsecureFormMethod(snap.body, routePath));
           }
 
           if (snap.headersElapsedMs > slowRouteMs) {
