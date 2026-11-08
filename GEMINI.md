@@ -1,10 +1,10 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
 ## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.11` (GitHub Release `v0.1.11`)
-- **Branch:** `feat/insecure-cors` (preparando v0.1.12)
-- **Última tarefa concluída:** **Implementação da Regra de CORS Perigoso (`insecure_cors`)** — Criação do módulo `src/scanner/cors-probe.ts`, disparo em paralelo via `probeCors` em `route-crawler.ts`, registro do literal `'insecure_cors'` em `SanityIssueKind`, instrução ordenada `INSECURE_CORS_INSTRUCTION` no `AI FIX PROMPT`, documentação no README.md e bateria de testes dedicada em `test/cors-probe.test.mjs`.
-- **Próxima tarefa:** Finalizar verificação adversarial (Fase 4), PR, merge, tag `v0.1.12` e publicação no npm.
+- **Versão atual no package.json:** `0.1.12` (GitHub Release `v0.1.12`)
+- **Branch:** `main`
+- **Última tarefa concluída:** **Release v0.1.12 (Sonda Paralela de CORS Perigoso — `insecure_cors`)** — Implementação da detecção de servidores que espelham qualquer cabeçalho `Origin` com `Access-Control-Allow-Credentials: true` via sonda paralela isolada em `src/scanner/cors-probe.ts`. Crawler normal preservado sem contaminação de `Origin`. 211/211 testes passando, Red Team validado contra Express real e Starlette. PR #20 mergeado, tag `v0.1.12` criada, pacote `vibesane@0.1.12` publicado no npm e GitHub Release `v0.1.12` publicada.
+- **Próxima tarefa:** Planejamento e escrutínio dos próximos aprimoramentos.
 
 ---
 
