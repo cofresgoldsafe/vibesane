@@ -21,6 +21,21 @@ export const EXPOSED_FILE_INSTRUCTION =
 export const INSECURE_CORS_INSTRUCTION =
   'Do not reflect the request Origin when credentials are allowed: configure an explicit allowlist of trusted origins in your CORS settings (e.g. cors({ origin: [ ... trusted origins ... ], credentials: true }) in Express, or allow_origins=[ ... ] instead of * or .* in FastAPI).';
 
+export const INSECURE_TRANSPORT_INSTRUCTION =
+  'Configure your web server, reverse proxy or hosting provider (Vercel, Netlify, Cloudflare, Nginx) to enforce HTTPS redirection for all HTTP traffic, send the Strict-Transport-Security header (e.g. max-age=31536000; includeSubDomains), and ensure a valid TLS certificate is deployed.';
+
+export const INSECURE_COOKIE_INSTRUCTION =
+  'Update your session cookie configuration in your authentication middleware or server settings to include Secure, HttpOnly, and SameSite=Lax (or SameSite=Strict).';
+
+export const STACK_TRACE_INSTRUCTION =
+  'Add a global error handling middleware to catch unhandled exceptions and return a generic error message (e.g. status 500 with { error: "Internal Server Error" }) instead of propagating raw error traces to the client.';
+
+export const EXPOSED_SOURCE_MAP_INSTRUCTION =
+  'Disable production source maps in your build config (e.g. in Next.js next.config.js set productionBrowserSourceMaps: false, or in Vite vite.config.ts set build.sourcemap: false).';
+
+export const MISSING_HEADERS_INSTRUCTION =
+  'Add security headers in your framework config or reverse proxy (e.g. next.config.js, vercel.json, netlify.toml, or server middleware): include "X-Content-Type-Options: nosniff" and "X-Frame-Options: SAMEORIGIN" (or CSP "frame-ancestors \'self\'").';
+
 export const CODE_ERROR_INSTRUCTION =
   'Fix only the error pointed out above; do not refactor unrelated code.';
 
@@ -73,7 +88,11 @@ function formatIndentedCodeFrame(rawFrame: string, maxLines = 10): string {
 }
 
 export function generateAiFixPrompt(input: AiPromptInput): string | null {
-  if (input.port === null || !Array.isArray(input.issues) || input.issues.length === 0) {
+  if (
+    (input.port === null && (!input.url || input.url.trim().length === 0)) ||
+    !Array.isArray(input.issues) ||
+    input.issues.length === 0
+  ) {
     return null;
   }
 
@@ -149,6 +168,19 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
   );
   const hasExposedFile = uniqueErrors.some((err) => err.kind === 'exposed_file');
   const hasInsecureCors = uniqueErrors.some((err) => err.kind === 'insecure_cors');
+  const hasInsecureTransport = uniqueErrors.some(
+    (err) => err.kind === 'insecure_transport',
+  );
+  const hasInsecureCookie = uniqueErrors.some(
+    (err) => err.kind === 'insecure_cookie',
+  );
+  const hasStackTrace = uniqueErrors.some((err) => err.kind === 'stack_trace_leak');
+  const hasExposedSourceMap = uniqueErrors.some(
+    (err) => err.kind === 'exposed_source_map',
+  );
+  const hasMissingHeaders = uniqueErrors.some(
+    (err) => err.kind === 'missing_security_headers',
+  );
   const hasCodeError = uniqueErrors.some(
     (err) =>
       err.kind === 'http_error' ||
@@ -162,6 +194,11 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
     (hasServerEnvInClient ? 1 : 0) +
     (hasExposedFile ? 1 : 0) +
     (hasInsecureCors ? 1 : 0) +
+    (hasInsecureTransport ? 1 : 0) +
+    (hasInsecureCookie ? 1 : 0) +
+    (hasStackTrace ? 1 : 0) +
+    (hasExposedSourceMap ? 1 : 0) +
+    (hasMissingHeaders ? 1 : 0) +
     (hasCodeError ? 1 : 0);
 
   if (activeCategoriesCount === 1) {
@@ -173,6 +210,16 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
       lines.push(`Instruction: ${EXPOSED_FILE_INSTRUCTION}`);
     } else if (hasInsecureCors) {
       lines.push(`Instruction: ${INSECURE_CORS_INSTRUCTION}`);
+    } else if (hasInsecureTransport) {
+      lines.push(`Instruction: ${INSECURE_TRANSPORT_INSTRUCTION}`);
+    } else if (hasInsecureCookie) {
+      lines.push(`Instruction: ${INSECURE_COOKIE_INSTRUCTION}`);
+    } else if (hasStackTrace) {
+      lines.push(`Instruction: ${STACK_TRACE_INSTRUCTION}`);
+    } else if (hasExposedSourceMap) {
+      lines.push(`Instruction: ${EXPOSED_SOURCE_MAP_INSTRUCTION}`);
+    } else if (hasMissingHeaders) {
+      lines.push(`Instruction: ${MISSING_HEADERS_INSTRUCTION}`);
     } else if (hasCodeError) {
       lines.push(`Instruction: ${CODE_ERROR_INSTRUCTION}`);
     }
@@ -190,6 +237,21 @@ export function generateAiFixPrompt(input: AiPromptInput): string | null {
     }
     if (hasInsecureCors) {
       lines.push(`Instruction (cors): ${INSECURE_CORS_INSTRUCTION}`);
+    }
+    if (hasInsecureTransport) {
+      lines.push(`Instruction (transport): ${INSECURE_TRANSPORT_INSTRUCTION}`);
+    }
+    if (hasInsecureCookie) {
+      lines.push(`Instruction (cookies): ${INSECURE_COOKIE_INSTRUCTION}`);
+    }
+    if (hasStackTrace) {
+      lines.push(`Instruction (stack trace): ${STACK_TRACE_INSTRUCTION}`);
+    }
+    if (hasExposedSourceMap) {
+      lines.push(`Instruction (source maps): ${EXPOSED_SOURCE_MAP_INSTRUCTION}`);
+    }
+    if (hasMissingHeaders) {
+      lines.push(`Instruction (security headers): ${MISSING_HEADERS_INSTRUCTION}`);
     }
     if (hasCodeError) {
       lines.push(`Instruction (code): ${CODE_ERROR_INSTRUCTION}`);

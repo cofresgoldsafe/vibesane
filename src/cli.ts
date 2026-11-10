@@ -13,6 +13,7 @@ const HELP_TEXT = [
   '',
   'Options:',
   '  -p, --port <number>  Target local port (1-65535)',
+  '      --url <url>      Target published web URL (http:// or https://)',
   '  -h, --help           Show help',
   '  -v, --version        Show version',
 ].join('\n');
@@ -22,6 +23,40 @@ function getVersion(): string {
     version: string;
   };
   return pkg.version;
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  let host = hostname.toLowerCase();
+  if (
+    host === 'localhost' ||
+    host === 'localhost.' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.localhost.')
+  ) {
+    return true;
+  }
+  if (host.startsWith('[') && host.endsWith(']')) {
+    host = host.slice(1, -1);
+  }
+  if (
+    host === '0.0.0.0' ||
+    host === '127.0.0.1' ||
+    /^127\.\d+\.\d+\.\d+$/.test(host) ||
+    host === '::1'
+  ) {
+    return true;
+  }
+  // IPv4-mapeado em IPv6 loopback (::ffff:127.x.x.x e ::ffff:7fxx:xxxx)
+  if (host.startsWith('::ffff:')) {
+    const rest = host.slice('::ffff:'.length);
+    if (/^127\.\d+\.\d+\.\d+$/.test(rest)) {
+      return true;
+    }
+    if (/^7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i.test(rest)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function main(
@@ -44,6 +79,7 @@ export async function main(
 
   let values: {
     port?: string[];
+    url?: string[];
     help?: boolean;
     version?: boolean;
   };
@@ -55,6 +91,7 @@ export async function main(
       allowPositionals: false,
       options: {
         port: { type: 'string', short: 'p', multiple: true },
+        url: { type: 'string', multiple: true },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -76,6 +113,11 @@ export async function main(
     return EXIT_CODES.OK;
   }
 
+  if (values.port !== undefined && values.url !== undefined) {
+    stderr('vibesane: error: options --url and --port cannot be used together');
+    return EXIT_CODES.USAGE_ERROR;
+  }
+
   let portNum: number | undefined;
   if (values.port !== undefined) {
     if (values.port.length > 1) {
@@ -94,7 +136,42 @@ export async function main(
     }
   }
 
-  const result = await runVibesane(portNum !== undefined ? { port: portNum } : {});
+  let targetUrl: string | undefined;
+  if (values.url !== undefined) {
+    if (values.url.length > 1) {
+      stderr('vibesane: error: option --url cannot be specified multiple times');
+      return EXIT_CODES.USAGE_ERROR;
+    }
+    const rawUrl = values.url[0] ?? '';
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(rawUrl);
+    } catch {
+      stderr(`vibesane: error: invalid url "${rawUrl}" (malformed URL)`);
+      return EXIT_CODES.USAGE_ERROR;
+    }
+
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      stderr(`vibesane: error: invalid url "${rawUrl}" (only http:// and https:// are supported)`);
+      return EXIT_CODES.USAGE_ERROR;
+    }
+
+    if (isLoopbackHost(parsedUrl.hostname)) {
+      stderr('vibesane: error: --url cannot point to localhost/loopback; use -p <port> instead');
+      return EXIT_CODES.USAGE_ERROR;
+    }
+
+    targetUrl = rawUrl;
+    stdout('vibesane: warning: use only on websites you own or have explicit authorization to test.');
+  }
+
+  const result = await runVibesane(
+    targetUrl !== undefined
+      ? { url: targetUrl }
+      : portNum !== undefined
+        ? { port: portNum }
+        : {}
+  );
   const useColor = io.stdout === undefined && shouldEnableColor();
   const output = formatTerminalReport(result, { color: useColor });
   stdout(output);

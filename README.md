@@ -26,7 +26,42 @@ Check a specific port:
 npx vibesane --port 8080
 ```
 
+Scan a deployed remote website:
+
+```bash
+npx vibesane --url https://example.com
+```
+
 **Requirement:** Node.js `>= 22.13.0`.
+
+## `--url` (Scanning Deployed Websites)
+
+To scan a deployed website, staging environment, or preview deployment:
+
+```bash
+npx vibesane --url https://example.com
+```
+
+> **Authorization Notice:** Use only on websites you own or have explicit authorization to test.
+
+### What It Checks in Remote Mode
+
+When `--url` is provided, `vibesane` runs 5 production-specific security checks alongside the existing security rules:
+
+- **Secure Transport (`insecure_transport`):** Validates the TLS certificate and verifies that HTTP traffic on port 80 redirects to HTTPS (`error` for invalid/expired TLS certificate or HTTP answering 2xx without redirect; missing HSTS is reported as `warning`).
+- **Secure Session Cookies (`insecure_cookie`):** Inspects `Set-Cookie` headers for sensitive session and authentication cookies (`session*`, `auth*`, `token*`, `jwt*`, etc.). Missing `Secure` on HTTPS is reported as `error`; missing `HttpOnly` or setting `SameSite=None` without `Secure` is reported as `warning` (missing `SameSite` is not flagged). Known CSRF tokens are excluded. Cookies with the same name and issue are deduplicated across the site.
+- **Basic Security Headers (`missing_security_headers`):** Checks the root response for clickjacking protection (`X-Frame-Options` or CSP `frame-ancestors`) and MIME sniffing protection (`X-Content-Type-Options: nosniff`). Always reported as `warning` (exit code `0`).
+- **Exposed Production Source Maps (`exposed_source_map`):** Detects if production scripts reference accessible `.map` files containing original unminified application source code. Always reported as `warning` (exit code `0`).
+- **Stack Trace & Debug Leak (`stack_trace_leak`):** Detects execution call stacks (Node.js/V8, Python tracebacks in Werkzeug/Flask/Django debug mode, or verbose SQL errors from PostgreSQL, MySQL, SQLite) on error responses (status >= 400). Reported as `error` (exit code `1`).
+- **Applicable Existing Rules:** Also inspects for client secret leaks (`secret_leak`), exposed server files (`/.env*`, `/.git/config`), CORS reflecting `Origin` with credentials (`insecure_cors`), insecure `GET` forms with password inputs (`insecure_form_method`), unauthenticated admin areas (`unauthenticated_admin_route`), and public OpenAPI endpoints (`unauthenticated_api_route`).
+
+### Honest Limitations
+
+- **Strictly Passive Checks:** Performs only `GET`, `HEAD`, and `OPTIONS` requests. Never sends `POST`/`PUT`/`DELETE`, never logs in, never submits forms, never executes client scripts, and never conducts brute force or parameter fuzzing.
+- **Request Ceiling & Concurrency:** 15-second global scan budget (`15000 ms`), concurrency capped at at most 2 simultaneous requests, and a strict ceiling of 40 requests per run. Routes skipped due to time or request limits are explicitly listed in the terminal report.
+- **Scope & Same-Origin Navigation:** The crawler stays strictly on the origin specified in `--url`. External links to other domains are not followed. On root initialization, one redirect is followed on the root: http -> https or the same-domain www. toggle (e.g. example.com <-> www.example.com). A chain of two redirects (http://example.com -> https://example.com -> https://www.example.com) is not followed yet; pass the final https address to --url.
+- **Public Pre-Login Cookies Only:** Inspects only `Set-Cookie` headers sent during navigation of publicly accessible routes before authentication. Cookies issued after interactive login flows are not inspected.
+- **HTTP Identification:** All requests include the header `User-Agent: vibesane/<version> (+https://github.com/cofresgoldsafe/vibesane)`.
 
 ## Pipe Directly to Clipboard (`pbcopy` / `clip`)
 
@@ -140,7 +175,8 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 
 | Flag | Description |
 | :--- | :--- |
-| `-p, --port <number>` | Check a specific TCP port (`1-65535`) instead of auto-detecting |
+| `-p, --port <number>` | Check a specific TCP port (`1-65535`) on loopback instead of auto-detecting |
+| `--url <url>` | Scan a remote deployed website (`http://` or `https://`; mutually exclusive with `-p`) |
 | `-h, --help` | Show CLI usage information |
 | `-v, --version` | Print the package version |
 
@@ -148,9 +184,9 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 
 | Code | Meaning |
 | :--- | :--- |
-| `0` | All sanity checks passed (including non-fatal warnings) |
-| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`, `server_env_in_client`, `syntax_error`, `exposed_file`, `insecure_cors`) or no local HTTP server found |
-| `2` | CLI usage error (invalid flag or invalid `--port` value) |
+| `0` | All sanity checks passed (including non-fatal warnings such as `missing_security_headers`, `exposed_source_map`, `unsanitized_html`, `unauthenticated_admin_route`, or missing HSTS) |
+| `1` | Sanity check failed (error-level issues: `http_error`, `masked_error`, `secret_leak`, `server_env_in_client`, `syntax_error`, `exposed_file`, `insecure_cors`, `insecure_form_method`, `insecure_transport` [invalid TLS or HTTP answering 2xx without redirect], `insecure_cookie` [session cookie without Secure], `stack_trace_leak`) or target unreachable / TLS failure |
+| `2` | CLI usage error (invalid flag, loopback passed to `--url`, or conflicting options) |
 
 ## License
 

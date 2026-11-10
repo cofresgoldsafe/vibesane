@@ -75,6 +75,7 @@ export async function probeAdminRoutes(
   rootBody: string,
   signal: AbortSignal,
   routeTimeoutMs: number,
+  fetchFn: typeof fetch = fetch,
 ): Promise<SanityIssue[]> {
   const randomSuffix = crypto.randomBytes(4).toString('hex');
   const missingPath = `/vibesane-missing-${randomSuffix}`;
@@ -94,7 +95,7 @@ export async function probeAdminRoutes(
         signal,
         AbortSignal.timeout(routeTimeoutMs),
       ]);
-      const res = await fetch(probeUrl.toString(), {
+      const res = await fetchFn(probeUrl.toString(), {
         method: 'GET',
         redirect: 'manual',
         signal: hopSignal,

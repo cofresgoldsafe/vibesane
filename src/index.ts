@@ -54,6 +54,7 @@ import {
   runSanityScan,
   type RouteScanItem,
   type SanityScanOptions,
+  type InternalRouteScanOptions,
   type SanityScanSummary,
 } from './scanner/route-crawler.js';
 import {
@@ -72,6 +73,7 @@ import {
   type VibesaneReportInput,
   type TerminalReportOptions,
 } from './reporter/terminal-ui.js';
+import { initRemoteTarget } from './scanner/remote-init.js';
 
 export type AiPromptIssueInput = AiPromptIssue;
 
@@ -149,7 +151,9 @@ export const EXIT_CODES = {
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
 
-export interface VibesaneOptions extends PortDetectorOptions, SanityScanOptions {}
+export interface VibesaneOptions extends PortDetectorOptions, SanityScanOptions {
+  url?: string;
+}
 
 export interface VibesaneResult extends PortDetectionResult {
   routes: RouteScanItem[];
@@ -159,6 +163,8 @@ export interface VibesaneResult extends PortDetectionResult {
   aiPrompt: string | null;
   message: string;
   probedApiRoutes: string[];
+  uncompletedSecurityProbes?: { count: number; reason: string }[];
+  skipReason?: 'request limit reached' | 'time budget reached';
 }
 
 function validateSanityScanOptions(options: SanityScanOptions): void {
@@ -279,17 +285,26 @@ function formatScanMessage(
   routes: readonly RouteScanItem[],
   scannedScripts: readonly string[],
   probedApiRoutes: readonly string[] = [],
+  redirectedFrom?: string,
+  isRemote = false,
+  skipReason?: 'request limit reached' | 'time budget reached',
+  uncompletedSecurityProbes?: { count: number; reason: string }[],
 ): string {
   const alsoSuffix =
     detection.alsoActivePorts.length > 0
       ? ` (also active: ${detection.alsoActivePorts.join(', ')})`
       : '';
-  const baseLine = `vibesane: connected to ${detection.url} (${detection.elapsedMs}ms)${alsoSuffix}`;
+  const baseLine = redirectedFrom
+    ? `vibesane: scanning ${detection.url} (redirected from ${redirectedFrom})`
+    : `vibesane: connected to ${detection.url} (${detection.elapsedMs}ms)${alsoSuffix}`;
   const coverageLine = determineCoverageLine(detection, routes, scannedScripts, warnings);
   const probedLine =
     probedApiRoutes.length > 0
       ? `info: probed ${probedApiRoutes.length === 1 ? '1 GET route' : `${probedApiRoutes.length} GET routes`} listed in /openapi.json`
       : null;
+
+  const skippedLimitLabel =
+    skipReason ?? (isRemote ? 'request limit reached' : 'time budget reached');
 
   if (ok) {
     const lines = [baseLine];
@@ -300,9 +315,14 @@ function formatScanMessage(
     if (probedLine) {
       lines.push(probedLine);
     }
+    if (uncompletedSecurityProbes && uncompletedSecurityProbes.length > 0) {
+      for (const p of uncompletedSecurityProbes) {
+        lines.push(`info: ${p.count} security probe(s) not completed (${p.reason})`);
+      }
+    }
     if (skippedRoutes.length > 0) {
       lines.push(
-        `info: ${skippedRoutes.length} route(s) not checked (time budget reached): ${skippedRoutes.join(', ')}`,
+        `info: ${skippedRoutes.length} route(s) not checked (${skippedLimitLabel}): ${skippedRoutes.join(', ')}`,
       );
     }
     return lines.join('\n');
@@ -322,9 +342,14 @@ function formatScanMessage(
   if (probedLine) {
     lines.push(probedLine);
   }
+  if (uncompletedSecurityProbes && uncompletedSecurityProbes.length > 0) {
+    for (const p of uncompletedSecurityProbes) {
+      lines.push(`info: ${p.count} security probe(s) not completed (${p.reason})`);
+    }
+  }
   if (skippedRoutes.length > 0) {
     lines.push(
-      `info: ${skippedRoutes.length} route(s) not checked (time budget reached): ${skippedRoutes.join(', ')}`,
+      `info: ${skippedRoutes.length} route(s) not checked (${skippedLimitLabel}): ${skippedRoutes.join(', ')}`,
     );
   }
   return lines.join('\n');
@@ -332,6 +357,140 @@ function formatScanMessage(
 
 export async function runVibesane(options: VibesaneOptions = {}): Promise<VibesaneResult> {
   validateSanityScanOptions(options);
+
+  if (options.url !== undefined) {
+    const rawTarget = options.url.trim();
+    const parsed = new URL(rawTarget);
+    const targetPort = parsed.port ? Number(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80);
+
+    const init = await initRemoteTarget(rawTarget, { routeTimeoutMs: options.routeTimeoutMs });
+    if (!init.ok) {
+      if (init.tlsError) {
+        const issue: SanityIssue = {
+          kind: 'insecure_transport',
+          severity: 'error',
+          route: '/',
+          detail: `TLS connection failed: certificate verification failed (${init.tlsError})`,
+        };
+        const message = `vibesane: sanity check failed on ${rawTarget} (1 error(s))\nerror [insecure_transport]: ${issue.detail}\ninfo: nothing was checked`;
+        const aiPrompt = generateAiFixPrompt({
+          ok: false,
+          port: targetPort,
+          url: rawTarget,
+          issues: [issue],
+        });
+        return {
+          ok: false,
+          port: targetPort,
+          url: rawTarget,
+          statusCode: undefined,
+          elapsedMs: 0,
+          alsoActivePorts: [],
+          checkedPorts: [],
+          routes: [],
+          scannedScripts: [],
+          skippedRoutes: [],
+          issues: [issue],
+          aiPrompt,
+          message,
+          probedApiRoutes: [],
+        };
+      }
+
+      // Falha de rede não-TLS (ENOTFOUND, ECONNREFUSED, ETIMEDOUT, EAI_AGAIN, etc.)
+      const failReason = init.unreachableCode ?? 'connection failed';
+      const message = `vibesane: could not reach ${rawTarget} (${failReason})`;
+      return {
+        ok: false,
+        port: null,
+        url: rawTarget,
+        statusCode: undefined,
+        elapsedMs: 0,
+        alsoActivePorts: [],
+        checkedPorts: [],
+        routes: [],
+        scannedScripts: [],
+        skippedRoutes: [],
+        issues: [],
+        aiPrompt: null,
+        message,
+        probedApiRoutes: [],
+      };
+    }
+
+    const finalPort = parsed.port
+      ? Number(parsed.port)
+      : (new URL(init.finalUrl).protocol === 'https:' ? 443 : 80);
+
+    const detection: PortDetectionResult = {
+      ok: true,
+      port: finalPort,
+      url: init.finalUrl,
+      elapsedMs: init.rootResponse?.headersElapsedMs ?? 0,
+      alsoActivePorts: [],
+      checkedPorts: [],
+      rootResponse: init.rootResponse,
+    };
+
+    const scan = await runSanityScan(
+      new URL(init.baseOrigin).hostname,
+      finalPort,
+      init.rootResponse!,
+      {
+        ...options,
+        baseOrigin: init.baseOrigin,
+        isRemote: true,
+        initialRequestCount: init.requestCount,
+        rootHeaders: init.rawHeaders,
+      },
+    );
+
+    const normalizedIssues = scan.issues.map((issue) => ({
+      ...issue,
+      route: stripViteTimestampQuery(issue.route),
+    }));
+
+    const errors = normalizedIssues.filter((i) => i.severity === 'error');
+    const warnings = normalizedIssues.filter((i) => i.severity === 'warning');
+    const ok = errors.length === 0;
+
+    const message = formatScanMessage(
+      detection,
+      ok,
+      errors,
+      warnings,
+      scan.skippedRoutes,
+      scan.routes,
+      scan.scannedScripts,
+      scan.probedApiRoutes,
+      init.redirectedFrom,
+      true,
+      scan.skipReason,
+      scan.uncompletedSecurityProbes,
+    );
+
+    const aiPrompt = generateAiFixPrompt({
+      ok,
+      port: detection.port,
+      url: detection.url,
+      issues: normalizedIssues,
+    });
+
+    return {
+      ...detection,
+      ok,
+      routes: scan.routes,
+      scannedScripts: scan.scannedScripts,
+      skippedRoutes: scan.skippedRoutes,
+      issues: normalizedIssues,
+      aiPrompt,
+      message,
+      probedApiRoutes: scan.probedApiRoutes,
+      uncompletedSecurityProbes: scan.uncompletedSecurityProbes,
+      skipReason: scan.skipReason,
+    };
+  }
+
   const detection = await detectServer(options);
 
   if (!detection.ok || detection.port === null || !detection.host || !detection.rootResponse) {
@@ -387,6 +546,10 @@ export async function runVibesane(options: VibesaneOptions = {}): Promise<Vibesa
     scan.routes,
     scan.scannedScripts,
     scan.probedApiRoutes,
+    undefined,
+    false,
+    scan.skipReason,
+    scan.uncompletedSecurityProbes,
   );
   const aiPrompt = generateAiFixPrompt({
     ok,
@@ -405,5 +568,7 @@ export async function runVibesane(options: VibesaneOptions = {}): Promise<Vibesa
     aiPrompt,
     message,
     probedApiRoutes: scan.probedApiRoutes,
+    uncompletedSecurityProbes: scan.uncompletedSecurityProbes,
+    skipReason: scan.skipReason,
   };
 }

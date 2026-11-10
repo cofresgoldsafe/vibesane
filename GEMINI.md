@@ -16,7 +16,7 @@
     1. Remove previamente comentários HTML (`<!--[\s\S]*?(?:-->|$)`) e scripts inline (`<script\b[^>]*>[\s\S]*?(?:<\/script\s*>|$)`).
     2. Localiza tags de abertura `<form\b([^>]*)>`.
     3. Fatiamento linear do corpo do form do fim da tag `<form ...>` até o primeiro entre `</form>`, próximo `<form\b` ou EOF (suportando HTML truncado).
-  - **Critérios de Silêncio Absoluto (Zero Falso Positivo):**
+  - **Critérios de Silêncio Absoluto (Alta Precisão):**
     1. Formulários sem atributo `method` (padrão em React/Next com `onSubmit`).
     2. Formulários com `method="post"` ou `method="dialog"`.
     3. Formulários com `method="get"` que não possuem campos de senha (ex.: busca).
@@ -41,7 +41,7 @@
   - **Motivação:** Áreas administrativas e de depuração (`/admin`, `/dashboard`, `/debug`) frequentemente sobem expostas sem autenticação em projetos vibe-coding. Contudo, em SPAs (Vite, CRA, Next.js catch-all) qualquer rota responde 200 com a mesma casca HTML (`index.html`), o que geraria falsos positivos severos se verificado cegamente.
   - **Classificação Estrita de Severidade:** Emitido exclusivamente como `severity: 'warning'`, com exit code 0 e sem acionar `AI FIX PROMPT`.
   - **Sonda Isolada e Paralela (`probeAdminRoutes`):** Testa concorrentemente a rota sentinela inexistente `/vibesane-missing-<8 hex>` e os caminhos fixos `ADMIN_PROBE_PATHS = ['/admin', '/dashboard', '/debug'] as const`, com `redirect: 'manual'`, sem credenciais (`credentials: 'omit'`), orçamento global e timeout individual de rota.
-  - **Critérios de Silêncio Absoluto (Zero Falso Positivo):**
+  - **Critérios de Silêncio Absoluto (Alta Precisão):**
     1. Status diferente de 200 (3xx redirects para login, 401, 403, 404, 5xx).
     2. Formulário de login: `looksLikeLoginPage(body)` detecta `<input ... type="password">` (case-insensitive, com ou sem aspas).
     3. Casca universal de SPA ou Catch-all: `isSameAsFallback(body, [rootBody, missingBody])` compara o conteúdo após higienização de nonces CSP (`/\s+nonce\s*=\s*(?:'[^']*'|\x22[^\x22]*\x22|[^\s>]+)/gi`) e colapso de espaços em branco.

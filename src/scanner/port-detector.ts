@@ -36,6 +36,7 @@ export interface RootHttpSnapshot {
   headersElapsedMs: number;
   truncated: boolean;
   truncatedReason?: TruncatedReason | null;
+  headers?: Headers;
 }
 
 export interface PortDetectionResult {
@@ -437,6 +438,7 @@ export async function detectServer(
         headersElapsedMs,
         truncated,
         truncatedReason,
+        headers: res.headers,
       },
     };
   } catch (err: unknown) {

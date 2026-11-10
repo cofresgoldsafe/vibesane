@@ -25,6 +25,7 @@ export async function probeCors(
   baseOrigin: string,
   signal: AbortSignal,
   routeTimeoutMs: number,
+  fetchFn: typeof fetch = fetch,
 ): Promise<SanityIssue[]> {
   const probeTasks = CORS_PROBE_PATHS.map(async (path): Promise<SanityIssue | null> => {
     let probeUrl: URL;
@@ -36,7 +37,7 @@ export async function probeCors(
 
     try {
       const hopSignal = AbortSignal.any([signal, AbortSignal.timeout(routeTimeoutMs)]);
-      const res = await fetch(probeUrl.toString(), {
+      const res = await fetchFn(probeUrl.toString(), {
         method: 'GET',
         headers: {
           Origin: CORS_PROBE_ORIGIN,
