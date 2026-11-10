@@ -34,34 +34,34 @@ npx vibesane --url https://example.com
 
 **Requirement:** Node.js `>= 22.13.0`.
 
-## `--url` (Site Publicado / Remote Scan)
+## `--url` (Scanning Deployed Websites)
 
-Para varrer um site publicado ou ambiente remoto:
+To scan a deployed website, staging environment, or preview deployment:
 
 ```bash
-npx vibesane --url https://meusite.com
+npx vibesane --url https://example.com
 ```
 
-> **Aviso de Responsabilidade:** Use apenas em sites que são seus ou que você tem autorização expressa para testar. / Use only on websites you own or have explicit authorization to test.
+> **Authorization Notice:** Use only on websites you own or have explicit authorization to test.
 
-### O Que é Verificado no Modo Remoto
+### What It Checks in Remote Mode
 
-Quando a opção `--url` é informada, o `vibesane` roda as 5 regras específicas para sites em produção somadas às regras de segurança existentes:
+When `--url` is provided, `vibesane` runs 5 production-specific security checks alongside the existing security rules:
 
-- **Transporte Seguro (`insecure_transport`):** Valida certificado TLS/HTTPS ativo e verifica se conexões na porta 80 (HTTP) redirecionam obrigatoriamente para HTTPS. Erro de certificado TLS ou ausência de redirecionamento geram erro (exit code 1).
-- **Cookies de Sessão Seguros (`insecure_cookie`):** Inspeciona cabeçalhos `Set-Cookie` em busca de cookies sensíveis de autenticação/sessão (`session*`, `auth*`, `token*`, `jwt*`, etc.) sem as flags `Secure`, `HttpOnly` ou `SameSite` adequadas. Tokens CSRF públicos são desconsiderados.
-- **Cabeçalhos de Segurança Básicos (`missing_security_headers`):** Verifica na resposta raiz a presença de proteção contra sniffing (`X-Content-Type-Options: nosniff`) e contra clickjacking (`X-Frame-Options` ou diretiva CSP `frame-ancestors`).
-- **Source Maps de Produção Expostos (`exposed_source_map`):** Detecta se scripts em produção contêm referências a arquivos `.map` acessíveis que exponham o código-fonte original desminificado.
-- **Vazamento de Stack Traces (`stack_trace_leak`):** Detecta rastros de pilha de execução (Node.js/V8, Python traceback em Werkzeug/Flask/Django ou mensagens verbosas de bancos SQL) em páginas ou respostas de erro (status >= 400).
-- **Regras Existentes Aplicáveis:** Também inspeciona vazamento de chaves e segredos (`secret_leak`), arquivos expostos (`/.env*`, `/.git/config`), CORS com espelhamento inseguro de Origin e credenciais (`insecure_cors`), formulários com método GET contendo senha (`insecure_form_method`), áreas administrativas desprotegidas (`unauthenticated_admin_route`) e rotas públicas via OpenAPI (`unauthenticated_api_route`).
+- **Secure Transport (`insecure_transport`):** Validates the TLS certificate and verifies that HTTP traffic on port 80 redirects to HTTPS (`error` for invalid/expired TLS certificate or HTTP answering 2xx without redirect; missing HSTS is reported as `warning`).
+- **Secure Session Cookies (`insecure_cookie`):** Inspects `Set-Cookie` headers for sensitive session and authentication cookies (`session*`, `auth*`, `token*`, `jwt*`, etc.). Missing `Secure` on HTTPS is reported as `error`; missing `HttpOnly` or setting `SameSite=None` without `Secure` is reported as `warning` (missing `SameSite` is not flagged). Known CSRF tokens are excluded. Cookies with the same name and issue are deduplicated across the site.
+- **Basic Security Headers (`missing_security_headers`):** Checks the root response for clickjacking protection (`X-Frame-Options` or CSP `frame-ancestors`) and MIME sniffing protection (`X-Content-Type-Options: nosniff`). Always reported as `warning` (exit code `0`).
+- **Exposed Production Source Maps (`exposed_source_map`):** Detects if production scripts reference accessible `.map` files containing original unminified application source code. Always reported as `warning` (exit code `0`).
+- **Stack Trace & Debug Leak (`stack_trace_leak`):** Detects execution call stacks (Node.js/V8, Python tracebacks in Werkzeug/Flask/Django debug mode, or verbose SQL errors from PostgreSQL, MySQL, SQLite) on error responses (status >= 400). Reported as `error` (exit code `1`).
+- **Applicable Existing Rules:** Also inspects for client secret leaks (`secret_leak`), exposed server files (`/.env*`, `/.git/config`), CORS reflecting `Origin` with credentials (`insecure_cors`), insecure `GET` forms with password inputs (`insecure_form_method`), unauthenticated admin areas (`unauthenticated_admin_route`), and public OpenAPI endpoints (`unauthenticated_api_route`).
 
-### Limites Honestos
+### Honest Limitations
 
-- **Verificações Estritamente Passivas:** Realiza apenas requisições `GET`, `HEAD` e `OPTIONS`. Não faz envio de `POST`/`PUT`/`DELETE`, não submete formulários, não executa scripts no cliente, não realiza força bruta nem fuzzing de parâmetros.
-- **Teto de Requisições e Concorrência:** Orçamento global de 15 segundos (`15000 ms`), concorrência limitada a no máximo 2 requisições simultâneas e teto estrito de até 40 requisições por execução.
-- **Escopo e Mesma Origem:** O crawler permanece estritamente na mesma origem informada em `--url`. Links externos para outros domínios não são seguidos. Os únicos redirecionamentos aceitos na inicialização da raiz são `http -> https` e alternância de subdomínio `www.` no mesmo domínio (`site.com` <-> `www.site.com`).
-- **Cookies Públicos Pré-Login:** Inspeciona apenas cabeçalhos `Set-Cookie` emitidos pelo servidor durante a navegação em páginas públicas acessíveis antes de autenticação. Cookies emitidos após fluxos de login não são inspecionados.
-- **Identificação HTTP:** Todas as requisições incluem o cabeçalho `User-Agent: vibesane/<versão> (+https://github.com/nirev/vibesane)`.
+- **Strictly Passive Checks:** Performs only `GET`, `HEAD`, and `OPTIONS` requests. Never sends `POST`/`PUT`/`DELETE`, never logs in, never submits forms, never executes client scripts, and never conducts brute force or parameter fuzzing.
+- **Request Ceiling & Concurrency:** 15-second global scan budget (`15000 ms`), concurrency capped at at most 2 simultaneous requests, and a strict ceiling of 40 requests per run. Routes skipped due to time or request limits are explicitly listed in the terminal report.
+- **Scope & Same-Origin Navigation:** The crawler stays strictly on the origin specified in `--url`. External links to other domains are not followed. On root initialization, up to 2 redirects are supported for `http -> https` and same-domain `www.` toggle (e.g. `example.com` <-> `www.example.com`).
+- **Public Pre-Login Cookies Only:** Inspects only `Set-Cookie` headers sent during navigation of publicly accessible routes before authentication. Cookies issued after interactive login flows are not inspected.
+- **HTTP Identification:** All requests include the header `User-Agent: vibesane/<version> (+https://github.com/cofresgoldsafe/vibesane)`.
 
 ## Pipe Directly to Clipboard (`pbcopy` / `clip`)
 
@@ -184,8 +184,8 @@ Right after starting `next dev`, Next.js compiles routes on demand on the very f
 
 | Code | Meaning |
 | :--- | :--- |
-| `0` | All sanity checks passed (including non-fatal warnings) |
-| `1` | Sanity check failed (`http_error`, `masked_error`, `secret_leak`, `server_env_in_client`, `syntax_error`, `exposed_file`, `insecure_cors`, `insecure_form_method`, `insecure_transport`, `insecure_cookie`, `missing_security_headers`, `exposed_source_map`, `stack_trace_leak`) or target unreachable / TLS failure |
+| `0` | All sanity checks passed (including non-fatal warnings such as `missing_security_headers`, `exposed_source_map`, `unsanitized_html`, `unauthenticated_admin_route`, or missing HSTS) |
+| `1` | Sanity check failed (error-level issues: `http_error`, `masked_error`, `secret_leak`, `server_env_in_client`, `syntax_error`, `exposed_file`, `insecure_cors`, `insecure_form_method`, `insecure_transport` [invalid TLS or HTTP answering 2xx without redirect], `insecure_cookie` [session cookie without Secure], `stack_trace_leak`) or target unreachable / TLS failure |
 | `2` | CLI usage error (invalid flag, loopback passed to `--url`, or conflicting options) |
 
 ## License
