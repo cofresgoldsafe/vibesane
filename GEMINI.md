@@ -1,14 +1,29 @@
 # GEMINI.md — Memória Consolidada do Projeto (`vibesane`)
 
-## Status do Plano Ativo (2026-11-08)
-- **Versão atual no package.json:** `0.1.15` (GitHub Release `v0.1.15`)
+## Status do Plano Ativo (2026-11-09)
+- **Versão atual no package.json:** `0.2.1` (npm e GitHub Releases `v0.2.0` e `v0.2.1`)
 - **Branch:** `main`
-- **Última tarefa concluída:** **Release v0.1.15 (Regra de Formulário com Método Inseguro — `insecure_form_method`)** — Detecção de formulários HTML servidos pelo backend com `method="get"` contendo campo de senha (`<input type="password">`). Emite `severity: 'error'` e exit code 1, acionando o AI Fix Prompt com instrução de código. Implementação com O(n) estrito com pré-corte no último `>` e busca de escopo indexada, silenciando em formulários sem `method` (padrão React/Next client-side), forms `post`/`dialog`, forms de busca, atributos `data-method`/`data-type`, comentários e scripts inline. 263/263 testes passando. PR #23 rebaseado e mergeado, tag `v0.1.15` criada e GitHub Release `v0.1.15` publicada.
+- **Última tarefa concluída:** **Releases v0.2.0 e v0.2.1 (Modo `--url` para Varredura de Sites Publicados & Hotfix de Timeout Remoto)**:
+  - **v0.2.0:** Suporte à varredura passiva remota (`vibesane --url https://meusite.com`) com 5 novas regras de produção (`insecure_transport`, `insecure_cookie`, `missing_security_headers`, `exposed_source_map`, `stack_trace_leak`). Modo local (`-p` / loopback) permanece inalterado. Teto estrito de 40 requisições, concorrência máxima de 2, orçamento de 15s no remoto, suporte a redirecionamentos na raiz (`http -> https` e alternância `www.`) e deduplicação de cookies por nome e problema em todo o site. Tipos internos desacoplados da API pública em `InternalRouteScanOptions`. 338/338 testes passando. PR #24 mergeado.
+  - **v0.2.1 (Hotfix):** Tratamento resiliente de DOMException TimeoutError (cujo `.code` é o número 23 e `.cause` é undefined no Node.js fetch), evitando quebra com `TypeError: code.startsWith is not a function`. `isTlsErrorCode` agora valida estritamente `typeof code === 'string'`. Timeout padrão da raiz remota aumentado de 4s para 10s para acomodar cold starts de serverless. 340/340 testes passando. PR #25 mergeado.
 - **Próxima tarefa:** Planejamento e escrutínio dos próximos aprimoramentos.
 
 ---
 
 ## Decisões Arquiteturais Travadas
+- **Modo Remoto Passivo (`--url <url>`, `src/scanner/remote-init.ts`, `src/scanner/route-crawler.ts` - v0.2.0 / v0.2.1):**
+  - **Motivação:** Permitir auditoria e pré-voo em sites publicados, ambientes de staging e preview deployments sem depender de servidor local em loopback, mantendo a filosofia de verificações passivas, rápidas e sem configuração.
+  - **Isolamento Completo do Modo Local:** O modo local (`-p` / autodetecção de portas) permanece idêntico à versão 0.1.15. As 5 novas regras de produção só são executadas se `isRemote === true`.
+  - **Teto Operacional e Concorrência Estrita:** Orçamento global de 15 segundos (`15000 ms`), concorrência limitada a no máximo 2 requisições simultâneas via semáforo interno e teto estrito de até 40 requisições por execução (`canMakeRequest()` conferido e decrementado após adquirir a vaga no semáforo). Rotas puladas por tempo ou limite de requisições são registradas explicitamente no relatório terminal.
+  - **Inicialização da Raiz e Redirecionamentos:** Requisição inicial com timeout de 10s (para suportar cold starts de serverless). Segue 1 redirecionamento na raiz: `http -> https` ou alternância de subdomínio `www.` no mesmo host (`site.com` <-> `www.site.com`). Cadeias de múltiplos redirecionamentos não são seguidas; a URL final deve ser fornecida ao `--url`.
+  - **Resiliência a Exceções de Timeout (v0.2.1):** Proteção no `remote-init.ts` contra DOMException de timeout onde `err.code` é número (`23`) e `err.cause` é `undefined`. `isTlsErrorCode` valida `typeof code === 'string'`. Erros de timeout mapeiam para `unreachableCode: 'timeout'`, reportando `vibesane: could not reach <url> (timeout)` sem unhandled exception.
+  - **5 Regras de Produção:**
+    1. `insecure_transport`: Valida certificado TLS (códigos canônicos `CERT_*`, `ERR_TLS_*`) e verifica se conexões na porta 80 (HTTP) redirecionam obrigatoriamente para HTTPS (resposta 2xx em HTTP gera erro). HSTS ausente gera `warning`.
+    2. `insecure_cookie`: Inspeciona cabeçalhos `Set-Cookie` em busca de cookies sensíveis de autenticação/sessão (`session*`, `auth*`, `token*`, `jwt*`, etc.). Ausência de `Secure` em HTTPS gera `error`; ausência de `HttpOnly` ou `SameSite=None` sem `Secure` geram `warning` (ausência de `SameSite` não é sinalizada). Tokens CSRF conhecidos são excluídos. Cookies idênticos com o mesmo problema são deduplicados em todo o site.
+    3. `missing_security_headers`: Inspeciona na resposta raiz a presença de `X-Content-Type-Options: nosniff` e `X-Frame-Options` (ou CSP `frame-ancestors`), tratando cabeçalhos duplicados com vírgula do Node (`nosniff, nosniff`). Sempre classificado como `warning` (exit code `0`).
+    4. `exposed_source_map`: Detecta se scripts em produção contêm referências a arquivos `.map` acessíveis contendo o código-fonte original desminificado. Ignora URLs com esquema `data:` e URLs apontando para outra origem. Sempre classificado como `warning` (exit code `0`).
+    5. `stack_trace_leak`: Detecta rastros de pilha de execução (Node.js/V8, Python tracebacks em Werkzeug/Flask/Django debug mode mesmo dentro de `<pre>`, ou mensagens verbosas de bancos SQL) exclusivamente em respostas de erro (status >= 400). Classificado como `error` (exit code `1`).
+  - **API Pública Mínima:** Tipos de controle interno do crawler (`isRemote`, `baseOrigin`, `userAgent`, `initialRequestCount`, `rootHeaders`) residem em `InternalRouteScanOptions`, mantendo `VibesaneOptions` e `SanityScanOptions` limpos e enxutos.
 - **Detecção de Formulário Inseguro com Método GET e Senha (`src/rules/insecure-form.ts`, `src/scanner/route-crawler.ts`):**
   - **Motivação:** A submissão de senha via GET anexa a credencial na Query String da URL, vazando no histórico do navegador, logs de servidores e proxies, e no cabeçalho `Referer` (CWE-598).
   - **Classificação:** Emitido como `kind: 'insecure_form_method'`, `severity: 'error'`, exit code `1`. Aciona o AI Fix Prompt integrado em `hasCodeError`.
