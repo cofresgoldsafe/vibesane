@@ -8,8 +8,8 @@ const KNOWN_TLS_CODES = new Set([
   'ERR_TLS_CERT_ALTNAME_INVALID',
 ]);
 
-export function isTlsErrorCode(code: string | undefined): boolean {
-  if (!code) {
+export function isTlsErrorCode(code: unknown): boolean {
+  if (typeof code !== 'string' || !code) {
     return false;
   }
   return (

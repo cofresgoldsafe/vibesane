@@ -255,4 +255,35 @@ describe('Remote Crawler Integration (node:http offline test server)', () => {
       await new Promise((resolve) => server.close(resolve));
     }
   });
+
+  it('servidor lento na raiz: quando o tempo excede routeTimeoutMs, runVibesane não lança exceção e devolve could not reach (timeout)', async () => {
+    let timer;
+    const server = http.createServer((req, res) => {
+      // Simula servidor que demora 6s para responder a raiz
+      timer = setTimeout(() => {
+        if (!res.writableEnded) {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<!DOCTYPE html><html><body>Late</body></html>');
+        }
+      }, 6000);
+    });
+
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    try {
+      const result = await runVibesane({
+        url: `http://127.0.0.1:${port}`,
+        routeTimeoutMs: 150,
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.issues.length, 0);
+      assert.equal(result.aiPrompt, null);
+      assert.equal(result.message, `vibesane: could not reach http://127.0.0.1:${port} (timeout)`);
+    } finally {
+      clearTimeout(timer);
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
 });

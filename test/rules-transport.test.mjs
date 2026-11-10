@@ -34,6 +34,13 @@ describe('rules: transport (insecure_transport)', () => {
         assert.equal(isTlsErrorCode(code), false, `expected ${code} not to be TLS code`);
       }
     });
+
+    it('retorna false para números (como DOMException code 23), null e undefined sem lançar exceção', () => {
+      assert.equal(isTlsErrorCode(23), false);
+      assert.equal(isTlsErrorCode(undefined), false);
+      assert.equal(isTlsErrorCode(null), false);
+      assert.equal(isTlsErrorCode({}), false);
+    });
   });
 
   describe('inspectTlsError', () => {
