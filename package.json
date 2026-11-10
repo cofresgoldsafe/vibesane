@@ -1,6 +1,6 @@
 {
   "name": "vibesane",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Test your vibe-coded web app in 3 seconds. Zero configs, zero setup, zero excuses.",
   "type": "module",
   "license": "MIT",
