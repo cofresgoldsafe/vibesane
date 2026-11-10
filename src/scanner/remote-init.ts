@@ -46,7 +46,7 @@ export async function initRemoteTarget(
     userAgent?: string;
   } = {},
 ): Promise<RemoteInitResult> {
-  const timeoutMs = options.routeTimeoutMs ?? 4000;
+  const timeoutMs = options.routeTimeoutMs ?? 10000;
   const userAgent = options.userAgent ?? getVibesaneUserAgent();
 
   const parsedInitial = new URL(targetUrl);
@@ -69,8 +69,10 @@ export async function initRemoteTarget(
       },
     });
   } catch (err: unknown) {
-    const errObj = err as { code?: string; cause?: { code?: string; message?: string } };
-    const errCode = errObj?.cause?.code ?? errObj?.code;
+    const errObj = err as { code?: unknown; name?: string; cause?: { code?: unknown; message?: string } } | null | undefined;
+    const rawCauseCode = typeof errObj?.cause?.code === 'string' ? errObj.cause.code : undefined;
+    const rawCode = typeof errObj?.code === 'string' ? errObj.code : undefined;
+    const errCode = rawCauseCode ?? rawCode;
 
     if (isTlsErrorCode(errCode)) {
       return {
@@ -83,9 +85,17 @@ export async function initRemoteTarget(
       };
     }
 
+    let unreachableCode: string;
+    const errName = errObj?.name ?? (err instanceof Error ? err.name : undefined);
+    if (errName === 'TimeoutError' || errName === 'AbortError') {
+      unreachableCode = 'timeout';
+    } else {
+      unreachableCode = errCode ?? errName ?? 'ECONNFAILED';
+    }
+
     return {
       ok: false,
-      unreachableCode: errCode ?? (err instanceof Error ? err.name : 'ECONNFAILED'),
+      unreachableCode,
       baseOrigin: initialOrigin,
       initialUrl: targetUrl,
       finalUrl: targetUrl,
@@ -149,8 +159,10 @@ export async function initRemoteTarget(
             redirectedFrom = initialOrigin;
           }
         } catch (err: unknown) {
-          const errObj = err as { code?: string; cause?: { code?: string; message?: string } };
-          const errCode = errObj?.cause?.code ?? errObj?.code;
+          const errObj = err as { code?: unknown; name?: string; cause?: { code?: unknown; message?: string } } | null | undefined;
+          const rawCauseCode = typeof errObj?.cause?.code === 'string' ? errObj.cause.code : undefined;
+          const rawCode = typeof errObj?.code === 'string' ? errObj.code : undefined;
+          const errCode = rawCauseCode ?? rawCode;
           if (isTlsErrorCode(errCode)) {
             return {
               ok: false,
