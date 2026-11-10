@@ -59,7 +59,7 @@ When `--url` is provided, `vibesane` runs 5 production-specific security checks 
 
 - **Strictly Passive Checks:** Performs only `GET`, `HEAD`, and `OPTIONS` requests. Never sends `POST`/`PUT`/`DELETE`, never logs in, never submits forms, never executes client scripts, and never conducts brute force or parameter fuzzing.
 - **Request Ceiling & Concurrency:** 15-second global scan budget (`15000 ms`), concurrency capped at at most 2 simultaneous requests, and a strict ceiling of 40 requests per run. Routes skipped due to time or request limits are explicitly listed in the terminal report.
-- **Scope & Same-Origin Navigation:** The crawler stays strictly on the origin specified in `--url`. External links to other domains are not followed. On root initialization, up to 2 redirects are supported for `http -> https` and same-domain `www.` toggle (e.g. `example.com` <-> `www.example.com`).
+- **Scope & Same-Origin Navigation:** The crawler stays strictly on the origin specified in `--url`. External links to other domains are not followed. On root initialization, one redirect is followed on the root: http -> https or the same-domain www. toggle (e.g. example.com <-> www.example.com). A chain of two redirects (http://example.com -> https://example.com -> https://www.example.com) is not followed yet; pass the final https address to --url.
 - **Public Pre-Login Cookies Only:** Inspects only `Set-Cookie` headers sent during navigation of publicly accessible routes before authentication. Cookies issued after interactive login flows are not inspected.
 - **HTTP Identification:** All requests include the header `User-Agent: vibesane/<version> (+https://github.com/cofresgoldsafe/vibesane)`.
 
