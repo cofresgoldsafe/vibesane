@@ -25,6 +25,18 @@ import { probeCors } from './cors-probe.js';
 import { probeAdminRoutes } from './admin-probe.js';
 import { scanUnsafeHtml } from './unsafe-html-scan.js';
 import { detectInsecureFormMethod } from '../rules/insecure-form.js';
+import { inspectHttpRedirect, inspectHstsHeader } from '../rules/transport.js';
+import { inspectSetCookie } from '../rules/cookies.js';
+import { inspectRootSecurityHeaders } from '../rules/security-headers.js';
+import {
+  extractSourceMapComment,
+  deriveSourceMapUrl,
+  resolveSourceMapTarget,
+  isLegitimateSourceMap,
+  createExposedSourceMapIssue,
+} from '../rules/source-maps.js';
+import { detectStackTraceLeak } from '../rules/stack-traces.js';
+import { getVibesaneUserAgent } from './remote-init.js';
 
 export const DEFAULT_SCAN_BUDGET_MS = 2500;
 export const DEFAULT_ROUTE_TIMEOUT_MS = 2000;
@@ -34,6 +46,44 @@ export const DEFAULT_MAX_SCRIPTS = 5;
 export const DEFAULT_MAX_CONCURRENCY = 4;
 export const MAX_REDIRECTS = 3;
 
+class Semaphore {
+  private active = 0;
+  private queue: (() => void)[] = [];
+  constructor(private max: number) {}
+
+  async acquire(signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return false;
+    if (this.active < this.max) {
+      this.active++;
+      return true;
+    }
+    return new Promise<boolean>((resolve) => {
+      const onAbort = () => {
+        const idx = this.queue.indexOf(resume);
+        if (idx !== -1) {
+          this.queue.splice(idx, 1);
+        }
+        resolve(false);
+      };
+      const resume = () => {
+        signal?.removeEventListener('abort', onAbort);
+        this.active++;
+        resolve(true);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.queue.push(resume);
+    });
+  }
+
+  release(): void {
+    this.active--;
+    if (this.queue.length > 0 && this.active < this.max) {
+      const next = this.queue.shift();
+      next?.();
+    }
+  }
+}
+
 export interface RouteScanItem {
   path: string;
   statusCode?: number;
@@ -41,6 +91,7 @@ export interface RouteScanItem {
   headersElapsedMs?: number;
   truncated?: boolean;
   skipped?: boolean;
+  skipReason?: 'request limit reached' | 'time budget reached';
 }
 
 export interface SanityScanOptions {
@@ -52,12 +103,22 @@ export interface SanityScanOptions {
   maxConcurrency?: number;
 }
 
+export interface InternalRouteScanOptions extends SanityScanOptions {
+  baseOrigin?: string;
+  isRemote?: boolean;
+  userAgent?: string;
+  initialRequestCount?: number;
+  rootHeaders?: Headers;
+}
+
 export interface SanityScanSummary {
   routes: RouteScanItem[];
   scannedScripts: string[];
   skippedRoutes: string[];
   issues: SanityIssue[];
   probedApiRoutes: string[];
+  uncompletedSecurityProbes?: { count: number; reason: string }[];
+  skipReason?: 'request limit reached' | 'time budget reached';
 }
 
 const ANCHOR_HREF_RE = /<a\b[^>]*?\bhref\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/gi;
@@ -510,6 +571,8 @@ export async function fetchSameOriginHop(
   followRedirects = true,
   maxBytes: number = MAX_BODY_BYTES,
   bodyTimeoutMs: number = DEFAULT_BODY_READ_TIMEOUT_MS,
+  userAgent?: string,
+  fetchFn: typeof fetch = fetch,
 ): Promise<RootHttpSnapshot> {
   const base = new URL(baseUrl);
   let currentUrl = new URL(initialPath, base);
@@ -518,10 +581,15 @@ export async function fetchSameOriginHop(
   while (true) {
     const hopSignal = AbortSignal.any([signal, AbortSignal.timeout(routeTimeoutMs)]);
     const hopStart = performance.now();
-    const res = await fetch(currentUrl.toString(), {
+    const fetchHeaders: Record<string, string> = {};
+    if (userAgent) {
+      fetchHeaders['User-Agent'] = userAgent;
+    }
+    const res = await fetchFn(currentUrl.toString(), {
       method: 'GET',
       redirect: 'manual',
       signal: hopSignal,
+      headers: Object.keys(fetchHeaders).length > 0 ? fetchHeaders : undefined,
     });
     const headersElapsedMs = Math.max(0, Math.round(performance.now() - hopStart));
     const statusCode = res.status;
@@ -566,6 +634,7 @@ export async function fetchSameOriginHop(
       headersElapsedMs,
       truncated,
       truncatedReason,
+      headers: res.headers,
     };
   }
 }
@@ -753,6 +822,8 @@ async function fetchExposedFileSnapshot(
   filePath: string,
   signal: AbortSignal,
   routeTimeoutMs: number,
+  userAgent?: string,
+  fetchFn: typeof fetch = fetch,
 ): Promise<{ statusCode: number; contentType: string; body: string } | null> {
   let targetUrl: URL;
   try {
@@ -763,10 +834,15 @@ async function fetchExposedFileSnapshot(
 
   const hopSignal = AbortSignal.any([signal, AbortSignal.timeout(routeTimeoutMs)]);
   try {
-    const res = await fetch(targetUrl.toString(), {
+    const fetchHeaders: Record<string, string> = {};
+    if (userAgent) {
+      fetchHeaders['User-Agent'] = userAgent;
+    }
+    const res = await fetchFn(targetUrl.toString(), {
       method: 'GET',
       redirect: 'manual',
       signal: hopSignal,
+      headers: Object.keys(fetchHeaders).length > 0 ? fetchHeaders : undefined,
     });
     const statusCode = res.status;
     const contentType = res.headers.get('content-type') ?? '';
@@ -789,17 +865,19 @@ async function probeExposedFiles(
   baseOrigin: string,
   signal: AbortSignal,
   routeTimeoutMs: number,
+  userAgent?: string,
+  fetchFn: typeof fetch = fetch,
 ): Promise<SanityIssue[]> {
   const issues: SanityIssue[] = [];
 
   const [envSnapshots, gitSnap] = await Promise.all([
     Promise.all(
       ENV_FILE_PATHS.map(async (envPath) => {
-        const snap = await fetchExposedFileSnapshot(baseOrigin, envPath, signal, routeTimeoutMs);
+        const snap = await fetchExposedFileSnapshot(baseOrigin, envPath, signal, routeTimeoutMs, userAgent, fetchFn);
         return { envPath, snap };
       }),
     ),
-    fetchExposedFileSnapshot(baseOrigin, '/.git/config', signal, routeTimeoutMs),
+    fetchExposedFileSnapshot(baseOrigin, '/.git/config', signal, routeTimeoutMs, userAgent, fetchFn),
   ]);
 
   for (const { envPath, snap } of envSnapshots) {
@@ -972,6 +1050,8 @@ async function probeOpenApiRoutes(
   baseOrigin: string,
   signal: AbortSignal,
   routeTimeoutMs: number,
+  userAgent?: string,
+  fetchFn: typeof fetch = fetch,
 ): Promise<{ issues: SanityIssue[]; probedRoutes: string[] }> {
   const issues: SanityIssue[] = [];
   const probedRoutes: string[] = [];
@@ -986,10 +1066,15 @@ async function probeOpenApiRoutes(
   const hopSignal = AbortSignal.any([signal, AbortSignal.timeout(routeTimeoutMs)]);
   let rawDoc = '';
   try {
-    const res = await fetch(openApiUrl.toString(), {
+    const fetchHeaders: Record<string, string> = {};
+    if (userAgent) {
+      fetchHeaders['User-Agent'] = userAgent;
+    }
+    const res = await fetchFn(openApiUrl.toString(), {
       method: 'GET',
       redirect: 'manual',
       signal: hopSignal,
+      headers: Object.keys(fetchHeaders).length > 0 ? fetchHeaders : undefined,
     });
     const contentType = res.headers.get('content-type') ?? '';
     if (res.status !== 200 || !contentType.toLowerCase().includes('json')) {
@@ -1029,11 +1114,16 @@ async function probeOpenApiRoutes(
 
     const routeSignal = AbortSignal.any([signal, AbortSignal.timeout(routeTimeoutMs)]);
     try {
-      const res = await fetch(targetUrl.toString(), {
+      const fetchHeaders: Record<string, string> = {};
+      if (userAgent) {
+        fetchHeaders['User-Agent'] = userAgent;
+      }
+      const res = await fetchFn(targetUrl.toString(), {
         method: 'GET',
         redirect: 'manual',
         signal: routeSignal,
         credentials: 'omit',
+        headers: Object.keys(fetchHeaders).length > 0 ? fetchHeaders : undefined,
       });
 
       // Contagem honesta: só conta se recebeu resposta HTTP real (qualquer status)
@@ -1070,17 +1160,23 @@ async function probeOpenApiRoutes(
 }
 
 export async function runSanityScan(
-  host: LoopbackHost,
+  host: LoopbackHost | string,
   port: number,
   rootResponse: RootHttpSnapshot,
-  options: SanityScanOptions = {},
+  options: InternalRouteScanOptions = {},
 ): Promise<SanityScanSummary> {
-  const scanBudgetMs = options.scanBudgetMs ?? DEFAULT_SCAN_BUDGET_MS;
+  const isRemote = Boolean(options.isRemote);
+  const userAgent = options.userAgent ?? (isRemote ? getVibesaneUserAgent() : undefined);
+  const scanBudgetMs = options.scanBudgetMs ?? (isRemote ? 15000 : DEFAULT_SCAN_BUDGET_MS);
   const routeTimeoutMs = options.routeTimeoutMs ?? DEFAULT_ROUTE_TIMEOUT_MS;
-  const slowRouteMs = options.slowRouteMs ?? DEFAULT_SLOW_ROUTE_MS;
+  const slowRouteMs = options.slowRouteMs ?? (isRemote ? 4000 : DEFAULT_SLOW_ROUTE_MS);
   const maxRoutes = options.maxRoutes ?? DEFAULT_MAX_ROUTES;
   const maxScripts = options.maxScripts ?? DEFAULT_MAX_SCRIPTS;
-  const maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+  const maxConcurrency = isRemote
+    ? Math.min(options.maxConcurrency ?? 2, 2)
+    : (options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
+  const bodyReadTimeoutMs = isRemote ? 2000 : DEFAULT_BODY_READ_TIMEOUT_MS;
+  const scriptBodyReadTimeoutMs = isRemote ? 2000 : DEFAULT_SCRIPT_BODY_READ_TIMEOUT_MS;
 
   assertValidTimeout(scanBudgetMs, 'scanBudgetMs');
   assertValidTimeout(routeTimeoutMs, 'routeTimeoutMs');
@@ -1096,29 +1192,70 @@ export async function runSanityScan(
     throw new RangeError(`Invalid maxConcurrency "${maxConcurrency}": expected integer >= 1`);
   }
 
-  const fetchHost = host === '::1' ? '[::1]' : '127.0.0.1';
-  const baseOrigin = `http://${fetchHost}:${port}`;
+  const fetchHost = host === '::1' ? '[::1]' : host;
+  const baseOrigin = options.baseOrigin ?? `http://${fetchHost}:${port}`;
   const baseUrlObj = new URL(baseOrigin);
 
-  const routes: RouteScanItem[] = [];
-  const scannedScripts: string[] = [];
-  const skippedRoutes: string[] = [];
-  const issues: SanityIssue[] = [];
-  let openApiResult: { issues: SanityIssue[]; probedRoutes: string[] } = {
-    issues: [],
-    probedRoutes: [],
+  let requestCount = options.initialRequestCount ?? 1;
+  const MAX_REMOTE_REQUESTS = 40;
+  const canMakeRequest = (): boolean => {
+    if (isRemote && requestCount >= MAX_REMOTE_REQUESTS) {
+      return false;
+    }
+    return true;
   };
-  const crawlStart = performance.now();
+  const recordRequest = (): void => {
+    requestCount++;
+  };
 
   const budgetController = new AbortController();
   const budgetTimer = setTimeout(() => {
     budgetController.abort();
   }, scanBudgetMs);
 
+  const semaphore = new Semaphore(2);
+  const remoteFetch: typeof fetch = async (input, init) => {
+    if (budgetController.signal.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    if (!canMakeRequest()) {
+      throw new Error('Request limit reached');
+    }
+    const acquired = await semaphore.acquire(budgetController.signal);
+    if (!acquired) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    if (!canMakeRequest()) {
+      semaphore.release();
+      throw new Error('Request limit reached');
+    }
+    recordRequest();
+    try {
+      return await fetch(input, init);
+    } finally {
+      semaphore.release();
+    }
+  };
+  const effectiveFetch = isRemote ? remoteFetch : fetch;
+
+  const routes: RouteScanItem[] = [];
+  const scannedScripts: string[] = [];
+  const skippedRoutes: string[] = [];
+  const issues: SanityIssue[] = [];
+  const probedSourceMaps = new Set<string>();
+  let openApiResult: { issues: SanityIssue[]; probedRoutes: string[] } = {
+    issues: [],
+    probedRoutes: [],
+  };
+  const uncompletedSecurityProbes: { count: number; reason: string }[] = [];
+  let skipReason: 'request limit reached' | 'time budget reached' | undefined;
+  const crawlStart = performance.now();
+
   try {
     let finalRoot: RootHttpSnapshot = rootResponse;
 
     if (
+      !isRemote &&
       REDIRECT_STATUS_CODES.has(rootResponse.statusCode) &&
       rootResponse.location !== undefined
     ) {
@@ -1187,7 +1324,7 @@ export async function runSanityScan(
           false,
           finalRoot.truncatedReason,
           MAX_BODY_BYTES,
-          DEFAULT_BODY_READ_TIMEOUT_MS,
+          bodyReadTimeoutMs,
         ),
       });
     }
@@ -1240,6 +1377,12 @@ export async function runSanityScan(
           ...(codeFrame ? { codeFrame } : {}),
         });
       }
+      if (isRemote) {
+        const stLeak = detectStackTraceLeak(finalRoot.body, finalRoot.statusCode, '/');
+        if (stLeak) {
+          issues.push(stLeak);
+        }
+      }
     } else if (!isFinalRootRedirect && isHtmlLike(finalRoot.contentType, finalRoot.body)) {
       issues.push(...detectMaskedError(finalRoot.body, '/'));
       issues.push(...detectInsecureFormMethod(finalRoot.body, '/'));
@@ -1247,6 +1390,129 @@ export async function runSanityScan(
 
     if (!isFinalRootRedirect && finalRoot.body.length > 0) {
       issues.push(...scanSecrets(finalRoot.body, '/'));
+    }
+
+    const seenCookieKeys = new Set<string>();
+    const addCookieIssue = (issue: SanityIssue): void => {
+      const key = issue.detail;
+      if (!seenCookieKeys.has(key)) {
+        seenCookieKeys.add(key);
+        issues.push(issue);
+      }
+    };
+
+    const effectiveRootHeaders = options.rootHeaders ?? finalRoot.headers;
+    if (isRemote && effectiveRootHeaders) {
+      const rootCookies = effectiveRootHeaders.getSetCookie?.() ??
+        (effectiveRootHeaders.get('set-cookie') ? [effectiveRootHeaders.get('set-cookie')!] : []);
+      for (const c of rootCookies) {
+        for (const issue of inspectSetCookie(c, baseOrigin.startsWith('https:'), '/')) {
+          addCookieIssue(issue);
+        }
+      }
+      if (isHtmlLike(finalRoot.contentType, finalRoot.body)) {
+        issues.push(...inspectRootSecurityHeaders(effectiveRootHeaders, '/'));
+      }
+    }
+
+    const probeFailures: { probe: string; reason: string }[] = [];
+
+    let remoteTransportPromise: Promise<SanityIssue[]> = Promise.resolve([]);
+    if (isRemote) {
+      remoteTransportPromise = (async () => {
+        const transportIssues: SanityIssue[] = [];
+        const parsedBase = new URL(baseOrigin);
+        if (baseOrigin.startsWith('https:')) {
+          const hstsRes = inspectHstsHeader(effectiveRootHeaders?.get('strict-transport-security'), '/');
+          if (!hstsRes.ok && hstsRes.issue) {
+            transportIssues.push(hstsRes.issue);
+          }
+          if (canMakeRequest()) {
+            try {
+              let currentProbeUrl = `http://${parsedBase.host}/`;
+              let probeHops = 0;
+              let probeFinished = false;
+
+              while (probeHops <= 2 && !probeFinished) {
+                if (probeHops > 0 && !canMakeRequest()) {
+                  probeFailures.push({ probe: 'http probe', reason: 'request limit reached' });
+                  break;
+                }
+                const hopSignal = AbortSignal.any([budgetController.signal, AbortSignal.timeout(routeTimeoutMs)]);
+                const probeRes = await effectiveFetch(currentProbeUrl, {
+                  method: 'GET',
+                  redirect: 'manual',
+                  signal: hopSignal,
+                  headers: userAgent ? { 'User-Agent': userAgent } : undefined,
+                });
+
+                const isRedir = [301, 302, 307, 308].includes(probeRes.status);
+                const loc = probeRes.headers.get('location');
+
+                if (isRedir && loc) {
+                  let parsedLoc: URL | null = null;
+                  try {
+                    parsedLoc = new URL(loc, currentProbeUrl);
+                  } catch {
+                    parsedLoc = null;
+                  }
+
+                  if (parsedLoc) {
+                    const locHost = parsedLoc.hostname.toLowerCase();
+                    const tgtHost = parsedBase.hostname.toLowerCase();
+                    const isSameHost =
+                      locHost === tgtHost ||
+                      locHost === `www.${tgtHost}` ||
+                      `www.${locHost}` === tgtHost;
+
+                    if (isSameHost) {
+                      if (parsedLoc.protocol === 'https:') {
+                        probeFinished = true;
+                        break;
+                      } else if (parsedLoc.protocol === 'http:' && probeHops < 2) {
+                        currentProbeUrl = parsedLoc.toString();
+                        probeHops++;
+                        continue;
+                      }
+                    }
+                  }
+                }
+
+                const outcome = inspectHttpRedirect(
+                  probeRes.status,
+                  loc,
+                  parsedBase.host,
+                  '/',
+                );
+                if (!outcome.ok && outcome.issue) {
+                  transportIssues.push(outcome.issue);
+                }
+                probeFinished = true;
+              }
+            } catch (err: unknown) {
+              if (budgetController.signal.aborted) {
+                probeFailures.push({ probe: 'http probe', reason: 'time budget reached' });
+              } else if (err instanceof Error && err.message === 'Request limit reached') {
+                probeFailures.push({ probe: 'http probe', reason: 'request limit reached' });
+              }
+              // Port 80 closed / ECONNREFUSED: silence
+            }
+          } else {
+            probeFailures.push({ probe: 'http probe', reason: 'request limit reached' });
+          }
+        } else if (baseOrigin.startsWith('http:')) {
+          const outcome = inspectHttpRedirect(
+            finalRoot.statusCode,
+            finalRoot.location,
+            parsedBase.host,
+            '/',
+          );
+          if (!outcome.ok && outcome.issue) {
+            transportIssues.push(outcome.issue);
+          }
+        }
+        return transportIssues;
+      })();
     }
 
     const rootHasViteClient = finalRoot.body.includes('/@vite/client');
@@ -1304,6 +1570,9 @@ export async function runSanityScan(
         if (budgetController.signal.aborted) {
           return;
         }
+        if (isRemote && !canMakeRequest()) {
+          return;
+        }
         try {
           const snap = await fetchSameOriginHop(
             baseOrigin,
@@ -1312,9 +1581,56 @@ export async function runSanityScan(
             routeTimeoutMs,
             true,
             MAX_SCRIPT_BODY_BYTES,
-            DEFAULT_SCRIPT_BODY_READ_TIMEOUT_MS,
+            scriptBodyReadTimeoutMs,
+            userAgent,
+            effectiveFetch,
           );
           scannedScripts.push(cleanScriptPath);
+
+          if (isRemote && snap.headers) {
+            const cookies = snap.headers.getSetCookie?.() ??
+              (snap.headers.get('set-cookie') ? [snap.headers.get('set-cookie')!] : []);
+            for (const c of cookies) {
+              for (const issue of inspectSetCookie(c, baseOrigin.startsWith('https:'), cleanScriptPath)) {
+                addCookieIssue(issue);
+              }
+            }
+          }
+
+          if (isRemote && probedSourceMaps.size < 3) {
+            const commentMap = extractSourceMapComment(snap.body);
+            const targetMap = resolveSourceMapTarget(commentMap, cleanScriptPath, baseOrigin);
+            if (targetMap && !probedSourceMaps.has(targetMap)) {
+              probedSourceMaps.add(targetMap);
+              if (canMakeRequest()) {
+                try {
+                  const mapSignal = AbortSignal.any([budgetController.signal, AbortSignal.timeout(routeTimeoutMs)]);
+                  const mapRes = await effectiveFetch(new URL(targetMap, baseOrigin).toString(), {
+                    method: 'GET',
+                    redirect: 'manual',
+                    signal: mapSignal,
+                    headers: userAgent ? { 'User-Agent': userAgent } : undefined,
+                  });
+                  if (mapRes.status === 200) {
+                    const mapSnap = await readBoundedTextBody(mapRes, 1024 * 1024, bodyReadTimeoutMs);
+                    if (isLegitimateSourceMap(mapSnap.body, mapRes.headers.get('content-type') ?? '')) {
+                      issues.push(createExposedSourceMapIssue(targetMap));
+                    }
+                  } else {
+                    await mapRes.body?.cancel().catch(() => {});
+                  }
+                } catch (err: unknown) {
+                  if (budgetController.signal.aborted) {
+                    probeFailures.push({ probe: 'map', reason: 'time budget reached' });
+                  } else if (err instanceof Error && err.message === 'Request limit reached') {
+                    probeFailures.push({ probe: 'map', reason: 'request limit reached' });
+                  }
+                }
+              } else {
+                probeFailures.push({ probe: 'map', reason: 'request limit reached' });
+              }
+            }
+          }
 
           if (snap.truncated) {
             issues.push({
@@ -1326,7 +1642,7 @@ export async function runSanityScan(
                 true,
                 snap.truncatedReason,
                 MAX_SCRIPT_BODY_BYTES,
-                DEFAULT_SCRIPT_BODY_READ_TIMEOUT_MS,
+                scriptBodyReadTimeoutMs,
               ),
             });
           }
@@ -1356,7 +1672,9 @@ export async function runSanityScan(
           if (snap.body.length > 0) {
             issues.push(...scanSecrets(snap.body, cleanScriptPath));
             issues.push(...scanServerEnv(snap.body, cleanScriptPath));
-            issues.push(...scanUnsafeHtml(snap.body, cleanScriptPath));
+            if (!isRemote) {
+              issues.push(...scanUnsafeHtml(snap.body, cleanScriptPath));
+            }
           }
 
           if (
@@ -1425,7 +1743,11 @@ export async function runSanityScan(
     const enqueueSubRouteTask = (routePath: string): void => {
       taskQueue.push(async () => {
         if (budgetController.signal.aborted) {
-          subRouteOutcomes.set(routePath, { path: routePath, skipped: true });
+          subRouteOutcomes.set(routePath, { path: routePath, skipped: true, skipReason: 'time budget reached' });
+          return;
+        }
+        if (isRemote && !canMakeRequest()) {
+          subRouteOutcomes.set(routePath, { path: routePath, skipped: true, skipReason: 'request limit reached' });
           return;
         }
 
@@ -1436,6 +1758,10 @@ export async function runSanityScan(
             budgetController.signal,
             routeTimeoutMs,
             true,
+            MAX_BODY_BYTES,
+            bodyReadTimeoutMs,
+            userAgent,
+            effectiveFetch,
           );
 
           subRouteOutcomes.set(routePath, {
@@ -1445,6 +1771,16 @@ export async function runSanityScan(
             headersElapsedMs: snap.headersElapsedMs,
             truncated: snap.truncated,
           });
+
+          if (isRemote && snap.headers) {
+            const cookies = snap.headers.getSetCookie?.() ??
+              (snap.headers.get('set-cookie') ? [snap.headers.get('set-cookie')!] : []);
+            for (const c of cookies) {
+              for (const issue of inspectSetCookie(c, baseOrigin.startsWith('https:'), routePath)) {
+                addCookieIssue(issue);
+              }
+            }
+          }
 
           if (snap.truncated) {
             issues.push({
@@ -1456,7 +1792,7 @@ export async function runSanityScan(
                 false,
                 snap.truncatedReason,
                 MAX_BODY_BYTES,
-                DEFAULT_BODY_READ_TIMEOUT_MS,
+                bodyReadTimeoutMs,
               ),
             });
           }
@@ -1496,6 +1832,12 @@ export async function runSanityScan(
                 ...(codeFrame ? { codeFrame } : {}),
               });
             }
+            if (isRemote) {
+              const st = detectStackTraceLeak(snap.body, snap.statusCode, routePath);
+              if (st) {
+                issues.push(st);
+              }
+            }
           } else if (!isSubRouteRedirect && isHtmlLike(snap.contentType, snap.body)) {
             issues.push(...detectMaskedError(snap.body, routePath));
             issues.push(...detectInsecureFormMethod(snap.body, routePath));
@@ -1515,8 +1857,12 @@ export async function runSanityScan(
             issues.push(...scanSecrets(snap.body, routePath));
           }
         } catch (err: unknown) {
-          if (budgetController.signal.aborted) {
-            subRouteOutcomes.set(routePath, { path: routePath, skipped: true });
+          if (
+            budgetController.signal.aborted ||
+            (err instanceof Error && err.message === 'Request limit reached')
+          ) {
+            const skipReason = budgetController.signal.aborted ? 'time budget reached' : 'request limit reached';
+            subRouteOutcomes.set(routePath, { path: routePath, skipped: true, skipReason });
           } else {
             const isTimeout =
               err instanceof Error &&
@@ -1547,50 +1893,131 @@ export async function runSanityScan(
       });
     };
 
-    const exposedFilesPromise = probeExposedFiles(
-      baseOrigin,
-      budgetController.signal,
-      routeTimeoutMs,
-    );
-    const openApiPromise = probeOpenApiRoutes(
-      baseOrigin,
-      budgetController.signal,
-      routeTimeoutMs,
-    );
-    const corsPromise = probeCors(
-      baseOrigin,
-      budgetController.signal,
-      routeTimeoutMs,
-    );
-    const adminPromise = probeAdminRoutes(
-      baseOrigin,
-      finalRoot.body ?? '',
-      budgetController.signal,
-      routeTimeoutMs,
-    );
+    if (isRemote) {
+      const runExposed = async () => {
+        try {
+          return await probeExposedFiles(baseOrigin, budgetController.signal, routeTimeoutMs, userAgent, effectiveFetch);
+        } finally {
+          if (budgetController.signal.aborted) {
+            probeFailures.push({ probe: 'env', reason: 'time budget reached' });
+            probeFailures.push({ probe: 'git', reason: 'time budget reached' });
+          } else if (!canMakeRequest()) {
+            probeFailures.push({ probe: 'env', reason: 'request limit reached' });
+            probeFailures.push({ probe: 'git', reason: 'request limit reached' });
+          }
+        }
+      };
 
-    for (const scriptPath of candidateScripts) {
-      enqueueScriptTask(scriptPath);
+      const runOpenApi = async () => {
+        try {
+          return await probeOpenApiRoutes(baseOrigin, budgetController.signal, routeTimeoutMs, userAgent, effectiveFetch);
+        } finally {
+          if (budgetController.signal.aborted) {
+            probeFailures.push({ probe: 'openapi', reason: 'time budget reached' });
+          } else if (!canMakeRequest()) {
+            probeFailures.push({ probe: 'openapi', reason: 'request limit reached' });
+          }
+        }
+      };
+
+      const runCors = async () => {
+        try {
+          return await probeCors(baseOrigin, budgetController.signal, routeTimeoutMs, effectiveFetch);
+        } finally {
+          if (budgetController.signal.aborted) {
+            probeFailures.push({ probe: 'cors', reason: 'time budget reached' });
+          } else if (!canMakeRequest()) {
+            probeFailures.push({ probe: 'cors', reason: 'request limit reached' });
+          }
+        }
+      };
+
+      const runAdmin = async () => {
+        try {
+          return await probeAdminRoutes(baseOrigin, finalRoot.body ?? '', budgetController.signal, routeTimeoutMs, effectiveFetch);
+        } finally {
+          if (budgetController.signal.aborted) {
+            probeFailures.push({ probe: 'admin', reason: 'time budget reached' });
+          } else if (!canMakeRequest()) {
+            probeFailures.push({ probe: 'admin', reason: 'request limit reached' });
+          }
+        }
+      };
+
+      const [exposedIssues, resolvedOpenApi, corsIssues, adminIssues, transportIssues] = await Promise.all([
+        runExposed(),
+        runOpenApi(),
+        runCors(),
+        runAdmin(),
+        remoteTransportPromise,
+      ]);
+      openApiResult = resolvedOpenApi;
+      issues.push(...exposedIssues);
+      issues.push(...openApiResult.issues);
+      issues.push(...corsIssues);
+      issues.push(...adminIssues);
+      issues.push(...transportIssues);
+
+      for (const scriptPath of candidateScripts) {
+        enqueueScriptTask(scriptPath);
+      }
+
+      for (const routePath of subRoutes) {
+        enqueueSubRouteTask(routePath);
+      }
+
+      pump();
+      await poolDone;
+    } else {
+      const exposedFilesPromise = probeExposedFiles(
+        baseOrigin,
+        budgetController.signal,
+        routeTimeoutMs,
+        userAgent,
+      );
+      const openApiPromise = probeOpenApiRoutes(
+        baseOrigin,
+        budgetController.signal,
+        routeTimeoutMs,
+        userAgent,
+      );
+      const corsPromise = probeCors(
+        baseOrigin,
+        budgetController.signal,
+        routeTimeoutMs,
+      );
+      const adminPromise = probeAdminRoutes(
+        baseOrigin,
+        finalRoot.body ?? '',
+        budgetController.signal,
+        routeTimeoutMs,
+      );
+
+      for (const scriptPath of candidateScripts) {
+        enqueueScriptTask(scriptPath);
+      }
+
+      for (const routePath of subRoutes) {
+        enqueueSubRouteTask(routePath);
+      }
+
+      pump();
+      await poolDone;
+
+      const [exposedIssues, resolvedOpenApi, corsIssues, adminIssues, transportIssues] = await Promise.all([
+        exposedFilesPromise,
+        openApiPromise,
+        corsPromise,
+        adminPromise,
+        remoteTransportPromise,
+      ]);
+      openApiResult = resolvedOpenApi;
+      issues.push(...exposedIssues);
+      issues.push(...openApiResult.issues);
+      issues.push(...corsIssues);
+      issues.push(...adminIssues);
+      issues.push(...transportIssues);
     }
-
-    for (const routePath of subRoutes) {
-      enqueueSubRouteTask(routePath);
-    }
-
-    pump();
-    await poolDone;
-
-    const [exposedIssues, resolvedOpenApi, corsIssues, adminIssues] = await Promise.all([
-      exposedFilesPromise,
-      openApiPromise,
-      corsPromise,
-      adminPromise,
-    ]);
-    openApiResult = resolvedOpenApi;
-    issues.push(...exposedIssues);
-    issues.push(...openApiResult.issues);
-    issues.push(...corsIssues);
-    issues.push(...adminIssues);
 
     for (const routePath of subRoutes) {
       const item = subRouteOutcomes.get(routePath);
@@ -1599,6 +2026,36 @@ export async function runSanityScan(
         if (item.skipped) {
           skippedRoutes.push(routePath);
         }
+      }
+    }
+
+    if (probeFailures.length > 0) {
+      const byReason = new Map<string, Set<string>>();
+      for (const { probe, reason } of probeFailures) {
+        if (!byReason.has(reason)) {
+          byReason.set(reason, new Set());
+        }
+        byReason.get(reason)!.add(probe);
+      }
+      for (const [reason, probes] of byReason.entries()) {
+        uncompletedSecurityProbes.push({ count: probes.size, reason });
+      }
+    }
+
+    if (skippedRoutes.length > 0) {
+      const reasons = Array.from(subRouteOutcomes.values())
+        .filter((r) => r.skipped && r.skipReason)
+        .map((r) => r.skipReason!);
+      if (reasons.includes('time budget reached')) {
+        skipReason = 'time budget reached';
+      } else if (reasons.includes('request limit reached')) {
+        skipReason = 'request limit reached';
+      } else {
+        skipReason = budgetController.signal.aborted
+          ? 'time budget reached'
+          : isRemote
+            ? 'request limit reached'
+            : 'time budget reached';
       }
     }
   } finally {
@@ -1611,5 +2068,7 @@ export async function runSanityScan(
     skippedRoutes,
     issues,
     probedApiRoutes: openApiResult.probedRoutes,
+    uncompletedSecurityProbes: uncompletedSecurityProbes.length > 0 ? uncompletedSecurityProbes : undefined,
+    skipReason,
   };
 }

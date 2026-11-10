@@ -1,6 +1,6 @@
 {
   "name": "vibesane",
-  "version": "0.1.15",
+  "version": "0.2.0",
   "description": "Test your vibe-coded web app in 3 seconds. Zero configs, zero setup, zero excuses.",
   "type": "module",
   "license": "MIT",
@@ -45,7 +45,7 @@
     "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
-    "test": "node --test test/cli.test.mjs test/port-detector.test.mjs test/sanity-scanner.test.mjs test/reporter.test.mjs test/rules.test.mjs test/syntax-check.test.mjs test/exposed-files.test.mjs test/openapi-probe.test.mjs test/cors-probe.test.mjs test/admin-probe.test.mjs test/unsafe-html.test.mjs test/insecure-form.test.mjs",
+    "test": "node --test test/cli.test.mjs test/port-detector.test.mjs test/sanity-scanner.test.mjs test/reporter.test.mjs test/rules.test.mjs test/syntax-check.test.mjs test/exposed-files.test.mjs test/openapi-probe.test.mjs test/cors-probe.test.mjs test/admin-probe.test.mjs test/unsafe-html.test.mjs test/insecure-form.test.mjs test/remote-cli.test.mjs test/rules-transport.test.mjs test/rules-cookies.test.mjs test/rules-security-headers.test.mjs test/rules-source-maps.test.mjs test/rules-stack-traces.test.mjs test/remote-crawler.test.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm test"
   },

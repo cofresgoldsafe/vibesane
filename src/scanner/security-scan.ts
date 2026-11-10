@@ -28,13 +28,18 @@ export { redactSecret, redactPassword, redactConnectionUri };
 export type SanitySeverity = 'error' | 'warning';
 export type SanityIssueKind =
   | 'exposed_file'
+  | 'exposed_source_map'
   | 'http_error'
+  | 'insecure_cookie'
   | 'insecure_cors'
   | 'insecure_form_method'
+  | 'insecure_transport'
   | 'masked_error'
+  | 'missing_security_headers'
   | 'secret_leak'
   | 'server_env_in_client'
   | 'slow_route'
+  | 'stack_trace_leak'
   | 'syntax_error'
   | 'truncated_body'
   | 'unauthenticated_admin_route'

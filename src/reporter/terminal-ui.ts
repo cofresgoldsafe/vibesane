@@ -93,7 +93,11 @@ function styleSummaryLines(summaryText: string, ok: boolean): string {
   return summaryText
     .split('\n')
     .map((line) => {
-      if (ok && line.startsWith('vibesane: connected to ')) {
+      if (
+        ok &&
+        (line.startsWith('vibesane: connected to ') ||
+          line.startsWith('vibesane: scanning '))
+      ) {
         return styleText('green', line);
       }
       if (!ok && (line.startsWith('vibesane: sanity check failed') || line.startsWith('error '))) {
@@ -117,7 +121,7 @@ export function formatTerminalReport(
     result.issues.some((issue) => issue.severity === 'error');
   const safeMessage = toAsciiSafe(result.message);
 
-  if (result.port === null || (!result.ok && !hasErrors)) {
+  if ((result.port === null && !result.url) || (!result.ok && !hasErrors)) {
     return useColor ? styleText('red', safeMessage) : safeMessage;
   }
 
